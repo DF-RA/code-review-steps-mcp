@@ -1,0 +1,5 @@
+# Estos archivos se ejecutan con bash (WSL, Linux, macOS): siempre LF.
+# Con core.autocrlf=true en Windows, sin esto el shebang queda como
+# "#!/usr/bin/env bash\r" y el intérprete no existe.
+*.sh    text eol=lf
+Makefile text eol=lf
