@@ -1,0 +1,42 @@
+{
+  "name": "code-review-steps-mcp",
+  "version": "0.1.0",
+  "description": "MCP server that exposes code review steps as tools, resources and prompts",
+  "license": "MIT",
+  "author": "Daniel Ruiz",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "code-review-steps-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "rulesets"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc && chmod +x dist/index.js",
+    "dev": "tsc --watch",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "inspect": "pnpm build && mcp-inspector node dist/index.js",
+    "inspect:cli": "pnpm build && mcp-inspector --cli node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "code-review"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/inspector": "^2.5.0",
+    "@types/node": "^26.4.1",
+    "typescript": "^7.0.2"
+  }
+}
