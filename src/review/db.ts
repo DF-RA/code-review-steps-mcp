@@ -3,10 +3,12 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import type { Finding } from "../analysis/types.js";
 import type { ChangedFile, ChangeStatus } from "../changed-files.js";
 import { UserFacingError } from "../errors.js";
 import type { TaskContext } from "./task-context.js";
 import type { ReviewSession } from "./session.js";
+import type { SkippedAnalyzer } from "../static-analysis.js";
 
 /**
  * Everything step 1 produces, kept on disk instead of in memory.
@@ -63,6 +65,20 @@ CREATE TABLE IF NOT EXISTS review_file (
   previous_path TEXT,
   position      INTEGER NOT NULL,
   PRIMARY KEY (review_id, path_id)
+);
+
+CREATE TABLE IF NOT EXISTS analyze_pr (
+  review_id   TEXT    PRIMARY KEY REFERENCES reviews (id) ON DELETE CASCADE,
+  -- Which analyzers ran, which did not and why, and the files none of them
+  -- covers: the conditions the findings were produced under, without which a
+  -- short list of problems cannot be told from a shallow look.
+  tools       TEXT    NOT NULL,
+  skipped     TEXT    NOT NULL,
+  unanalyzed  TEXT    NOT NULL,
+  -- Findings flat and in order; step 5 wants them grouped by file, and the
+  -- grouping is rebuilt on the way out.
+  findings    TEXT    NOT NULL,
+  analyzed_at INTEGER NOT NULL
 );
 `;
 
@@ -427,4 +443,99 @@ export function findReviewFiles(reviewId: string): ChangedFile[] | undefined {
     status: row.status as ChangeStatus,
     ...(row.previous_path ? { previousPath: row.previous_path } : {}),
   }));
+}
+
+/**
+ * Throws away everything the steps after the first left for a review, keeping
+ * the review itself.
+ *
+ * The row in reviews is the identity of the review — its id, its pull request,
+ * its frozen commits — and that is precisely what must not change: redoing the
+ * work is not opening another review of the same code. Everything the later
+ * steps derived from it goes, including the mark on reviews that says step 3
+ * ran, which lives there rather than in a table of its own.
+ */
+export function resetReviewSteps(reviewId: string): void {
+  const db = connect();
+
+  db.exec("BEGIN");
+
+  try {
+    db.prepare(`DELETE FROM analyze_pr WHERE review_id = ?`).run(reviewId);
+    db.prepare(`DELETE FROM review_file WHERE review_id = ?`).run(reviewId);
+    db.prepare(`DELETE FROM context WHERE review_id = ?`).run(reviewId);
+    db.prepare(`UPDATE reviews SET files_listed_at = NULL WHERE id = ?`).run(reviewId);
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+
+    throw error;
+  }
+}
+
+/** What step 4 leaves behind, as the session carries it. */
+export type StoredAnalysis = NonNullable<ReviewSession["analysis"]>;
+
+interface AnalysisRow {
+  tools: string;
+  skipped: string;
+  unanalyzed: string;
+  findings: string;
+}
+
+/**
+ * Stores the outcome of step 4, replacing any previous one.
+ *
+ * The findings go in flat and in the order the analysis sorted them, which is
+ * by severity and then by path: grouping them by file is a shape step 5 wants,
+ * not information, so it is rebuilt on reading instead of stored twice.
+ */
+export function saveAnalysis(reviewId: string, analysis: StoredAnalysis): void {
+  connect()
+    .prepare(
+      `INSERT INTO analyze_pr (review_id, tools, skipped, unanalyzed, findings, analyzed_at)
+       VALUES (?, ?, ?, ?, ?, ?)
+       ON CONFLICT (review_id) DO UPDATE SET
+         tools = excluded.tools,
+         skipped = excluded.skipped,
+         unanalyzed = excluded.unanalyzed,
+         findings = excluded.findings,
+         analyzed_at = excluded.analyzed_at`,
+    )
+    .run(
+      reviewId,
+      JSON.stringify(analysis.tools),
+      JSON.stringify(analysis.skipped),
+      JSON.stringify(analysis.unanalyzed),
+      JSON.stringify([...analysis.findingsByFile.values()].flat()),
+      Date.now(),
+    );
+}
+
+/** The analysis of a review, or undefined when step 4 has not run. */
+export function findAnalysis(reviewId: string): StoredAnalysis | undefined {
+  const row = connect()
+    .prepare(`SELECT tools, skipped, unanalyzed, findings FROM analyze_pr WHERE review_id = ?`)
+    .get(reviewId) as unknown as AnalysisRow | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  const findingsByFile = new Map<string, Finding[]>();
+
+  for (const finding of JSON.parse(row.findings) as Finding[]) {
+    const forFile = findingsByFile.get(finding.path) ?? [];
+
+    forFile.push(finding);
+    findingsByFile.set(finding.path, forFile);
+  }
+
+  return {
+    tools: JSON.parse(row.tools) as string[],
+    skipped: JSON.parse(row.skipped) as SkippedAnalyzer[],
+    unanalyzed: JSON.parse(row.unanalyzed) as string[],
+    findingsByFile,
+  };
 }

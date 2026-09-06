@@ -38,7 +38,7 @@ const GROUPS: { status: ChangedFile["status"]; label: string; mark: string }[] =
   { status: "unknown", label: "Sin clasificar", mark: "?" },
 ];
 
-function format(session: ReviewSession, files: ChangedFile[]): string {
+function format(session: ReviewSession, files: ChangedFile[], reused: boolean): string {
   // The range is shas now, so the branches carry the readable half and the
   // short shas say which commits, without pretending a name is the code.
   const lines = [
@@ -61,7 +61,12 @@ function format(session: ReviewSession, files: ChangedFile[]): string {
     }
   }
 
-  lines.push("", "Siguiente: analyze_pr con este reviewId.");
+  lines.push(
+    "",
+    reused
+      ? "Lista ya guardada de esta revisión: no se ha vuelto a mirar el repositorio. Para rehacerla, start_review con restart: true."
+      : "Siguiente: analyze_pr con este reviewId.",
+  );
 
   return lines.join("\n");
 }
@@ -81,15 +86,20 @@ export function registerGetPrFiles(server: McpServer): void {
         const session = requireSession(reviewId);
         requireRecordedTaskContext(session.id);
 
-        const files = await listChangedFiles(session.repoPath, session.range);
+        // The range is frozen on commits, so listing again could only ever give
+        // the same answer. What is already stored is the answer.
+        const reused = session.files !== undefined;
+        const files = session.files ?? (await listChangedFiles(session.repoPath, session.range));
 
-        // Stored on the review: the next steps read from here, they do not
-        // recompute it, and they find it after a restart too.
-        session.files = files;
-        saveReviewFiles(session.id, files);
+        if (!reused) {
+          // Stored on the review: the next steps read from here, they do not
+          // recompute it, and they find it after a restart too.
+          session.files = files;
+          saveReviewFiles(session.id, files);
+        }
 
         return {
-          content: [{ type: "text", text: format(session, files) }],
+          content: [{ type: "text", text: format(session, files, reused) }],
           structuredContent: {
             reviewId: session.id,
             prNumber: session.prNumber,

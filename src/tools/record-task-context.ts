@@ -2,7 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { UserFacingError } from "../errors.js";
-import { saveTaskContext } from "../review/db.js";
+import { findTaskContext, saveTaskContext } from "../review/db.js";
 import { requireSession } from "../review/session.js";
 
 const inputSchema = {
@@ -46,6 +46,32 @@ export function registerRecordTaskContext(server: McpServer): void {
     async ({ reviewId, found, reason, code, title, summary, url }) => {
       try {
         const session = requireSession(reviewId);
+        const already = findTaskContext(session.id);
+
+        // Recording it twice is not correcting it: the review already answered
+        // this question, and the answer belongs to the code that was frozen.
+        if (already) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: [
+                  already.found
+                    ? `El contexto de la tarea ya estaba registrado: ${already.code ?? "sin código"}${already.title ? ` — ${already.title}` : ""}.`
+                    : `El contexto de la tarea ya estaba registrado: sin tarea (${already.reason}).`,
+                  "No se ha cambiado nada. Para rehacer la revisión desde cero, start_review con restart: true.",
+                  "",
+                  "Siguiente: get_pr_files con este reviewId.",
+                ].join("\n"),
+              },
+            ],
+            structuredContent: {
+              reviewId: session.id,
+              found: already.found,
+              code: already.code,
+            },
+          };
+        }
 
         if (!found && !reason?.trim()) {
           throw new UserFacingError(

@@ -8,10 +8,12 @@ import type { FixItem } from "./fixes.js";
 import type { TaskContext } from "./task-context.js";
 import { UserFacingError } from "../errors.js";
 import {
+  findAnalysis,
   findReviewById,
   findReviewFiles,
   findTaskContext,
   hasTaskContext,
+  resetReviewSteps,
   saveReview,
   saveTaskContext,
 } from "./db.js";
@@ -139,6 +141,24 @@ export function adoptSession(session: ReviewSession): ReviewSession {
   return remember(session);
 }
 
+/**
+ * Puts a review back to just after step 1, on disk and in memory.
+ *
+ * Clearing only the rows would leave a live session still holding what the
+ * steps produced, and this process would go on serving it as if nothing had
+ * happened.
+ */
+export function restartSteps(session: ReviewSession): void {
+  resetReviewSteps(session.id);
+
+  session.taskContext = undefined;
+  session.files = undefined;
+  session.analysis = undefined;
+  session.reviews = undefined;
+  session.draft = undefined;
+  session.fixes = undefined;
+}
+
 /** Every step starts here, so a missing session says what to do. */
 export function requireSession(reviewId: string): ReviewSession {
   const id = reviewId.trim();
@@ -164,6 +184,7 @@ export function requireSession(reviewId: string): ReviewSession {
     ...stored,
     taskContext: findTaskContext(stored.id),
     files: findReviewFiles(stored.id),
+    analysis: findAnalysis(stored.id),
   };
 
   prune();

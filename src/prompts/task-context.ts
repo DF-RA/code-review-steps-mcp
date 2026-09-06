@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { taskTracker, type TaskTracker } from "../extensions/extension.js";
+import { findTaskContext } from "../review/db.js";
 import { requireSession } from "../review/session.js";
 
 /**
@@ -49,6 +50,39 @@ export function registerTaskContextPrompt(server: McpServer): void {
     },
     async ({ reviewId }) => {
       const session = requireSession(reviewId);
+      const already = findTaskContext(session.id);
+
+      // Sending the agent to the tracker for an answer the review already has
+      // spends calls to get back what is sitting in the database.
+      if (already) {
+        return {
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: [
+                  `El contexto de la tarea del PR #${session.prNumber} ya está registrado en esta revisión:`,
+                  "",
+                  already.found
+                    ? [
+                        `Tarea: ${already.code ?? "sin código"}${already.title ? ` — ${already.title}` : ""}`,
+                        already.summary ? `Qué pide: ${already.summary}` : "",
+                        already.url ? `Enlace: ${already.url}` : "",
+                      ]
+                        .filter(Boolean)
+                        .join("\n")
+                    : `Sin tarea: ${already.reason}`,
+                  "",
+                  "No hay nada que buscar. Pasa directamente a get_pr_files con este reviewId.",
+                  "Si quieres rehacer la revisión entera, start_review con restart: true.",
+                ].join("\n"),
+              },
+            },
+          ],
+        };
+      }
+
       const tracker = await taskTracker();
 
       const text = [

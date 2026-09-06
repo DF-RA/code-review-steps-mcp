@@ -9,6 +9,7 @@ import {
   requireFiles,
   requireSession,
   requireTaskContext,
+  restartSteps,
 } from "../../src/review/session.js";
 import { saveTaskContext } from "../../src/review/db.js";
 import { useTempDb } from "../helpers/db.js";
@@ -180,6 +181,37 @@ describe("the session cache", () => {
     assert.notEqual(back, first);
     assert.equal(back.prNumber, first.prNumber);
     assert.equal(back.headRefOid, first.headRefOid);
+  });
+});
+
+describe("restartSteps", () => {
+  test("empties the live session too, not only the rows", (t) => {
+    useTempDb(t);
+
+    const session = createSession(sessionData());
+
+    saveTaskContext(session.id, { found: true, code: "PROJ-1" });
+    session.taskContext = { found: true, code: "PROJ-1" };
+    session.files = [];
+    session.analysis = { tools: [], skipped: [], findingsByFile: new Map(), unanalyzed: [] };
+    session.draft = { comments: [], confirmed: false, createdAt: 1 };
+
+    restartSteps(session);
+
+    assert.equal(session.taskContext, undefined);
+    assert.equal(session.files, undefined);
+    assert.equal(session.analysis, undefined);
+    assert.equal(session.draft, undefined);
+  });
+
+  test("leaves the session findable under the same id", (t) => {
+    useTempDb(t);
+
+    const session = createSession(sessionData());
+
+    restartSteps(session);
+
+    assert.equal(requireSession(session.id).id, session.id);
   });
 });
 

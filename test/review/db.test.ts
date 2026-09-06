@@ -1,16 +1,19 @@
 import assert from "node:assert/strict";
+import { rmSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 
-import { rmSync } from "node:fs";
-
 import { pathId } from "../../src/changed-files.js";
+import type { Finding } from "../../src/analysis/types.js";
 import {
   closeDb,
+  findAnalysis,
   findReviewByHead,
   findReviewFiles,
   hasReviewFiles,
   hasTaskContext,
+  resetReviewSteps,
+  saveAnalysis,
   saveReviewFiles,
   findReviewById,
   findReviewsOfPr,
@@ -378,5 +381,156 @@ describe("ranges stored as branch names", () => {
     assert.equal(back?.targetBranch, "develop");
     assert.equal(back?.sourceBranch, "feature/x");
     assert.equal(back?.headSha, "9675d47a");
+  });
+});
+
+describe("restarting a review", () => {
+  function reviewWithEveryStep(): void {
+    saveReview(stored());
+    saveTaskContext("r1", { found: true, code: "PROJ-1" });
+    saveReviewFiles("r1", [
+      { pathId: pathId("src/app.ts"), path: "src/app.ts", status: "modified" },
+    ]);
+  }
+
+  test("throws away what the later steps produced", (t) => {
+    useTempDb(t);
+    reviewWithEveryStep();
+
+    resetReviewSteps("r1");
+
+    assert.equal(findTaskContext("r1"), undefined);
+    assert.equal(findReviewFiles("r1"), undefined);
+  });
+
+  test("puts step 3 back to never having run, not to having found nothing", (t) => {
+    useTempDb(t);
+    reviewWithEveryStep();
+
+    resetReviewSteps("r1");
+
+    assert.equal(hasReviewFiles("r1"), false);
+  });
+
+  test("keeps the review itself, which is what its id names", (t) => {
+    useTempDb(t);
+    reviewWithEveryStep();
+
+    resetReviewSteps("r1");
+
+    const back = findReviewById("r1");
+
+    assert.equal(back?.id, "r1");
+    assert.equal(back?.headSha, "b".repeat(40));
+    assert.equal(back?.range, `${"a".repeat(40)}...${"b".repeat(40)}`);
+  });
+
+  test("leaves other reviews alone", (t) => {
+    useTempDb(t);
+    reviewWithEveryStep();
+    saveReview(stored({ prNumber: 300, headRefOid: "c".repeat(40) }, "r2"));
+    saveTaskContext("r2", { found: true, code: "PROJ-2" });
+
+    resetReviewSteps("r1");
+
+    assert.equal(findTaskContext("r2")?.code, "PROJ-2");
+  });
+});
+
+describe("the analysis of a review", () => {
+  function finding(path: string, line: number, severity: "high" | "medium" | "low") {
+    return {
+      tool: "ESLint",
+      path,
+      line,
+      endLine: line,
+      rule: "no-unused-vars",
+      severity,
+      message: `algo en ${path}:${line}`,
+    };
+  }
+
+  const analysis = {
+    tools: ["ESLint", "Semgrep"],
+    skipped: [{ tool: "Ruff", reason: "no está instalado" }],
+    unanalyzed: ["README.md"],
+    findingsByFile: new Map([
+      ["src/app.ts", [finding("src/app.ts", 3, "high" as const), finding("src/app.ts", 9, "low" as const)]],
+      ["src/otro.ts", [finding("src/otro.ts", 1, "medium" as const)]],
+    ]),
+  };
+
+  test("gives back what the analyzers produced", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveAnalysis("r1", analysis);
+
+    assert.deepEqual(findAnalysis("r1"), analysis);
+  });
+
+  test("keeps the conditions the findings were produced under", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveAnalysis("r1", analysis);
+
+    const back = findAnalysis("r1");
+
+    // Without these, no findings and nobody looked read the same.
+    assert.deepEqual(back?.tools, ["ESLint", "Semgrep"]);
+    assert.deepEqual(back?.skipped, [{ tool: "Ruff", reason: "no está instalado" }]);
+    assert.deepEqual(back?.unanalyzed, ["README.md"]);
+  });
+
+  test("keeps the order of the findings inside each file", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveAnalysis("r1", analysis);
+
+    assert.deepEqual(
+      findAnalysis("r1")?.findingsByFile.get("src/app.ts")?.map((found: Finding) => found.line),
+      [3, 9],
+    );
+  });
+
+  test("tells apart not run from run and clean", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    assert.equal(findAnalysis("r1"), undefined);
+
+    saveAnalysis("r1", { tools: ["ESLint"], skipped: [], unanalyzed: [], findingsByFile: new Map() });
+
+    const back = findAnalysis("r1");
+
+    assert.deepEqual(back?.tools, ["ESLint"]);
+    assert.equal(back?.findingsByFile.size, 0);
+  });
+
+  test("analysing again replaces the previous outcome", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveAnalysis("r1", analysis);
+    saveAnalysis("r1", { tools: ["Ruff"], skipped: [], unanalyzed: [], findingsByFile: new Map() });
+
+    assert.deepEqual(findAnalysis("r1")?.tools, ["Ruff"]);
+    assert.equal(findAnalysis("r1")?.findingsByFile.size, 0);
+  });
+
+  test("refuses an analysis whose review does not exist", (t) => {
+    useTempDb(t);
+
+    assert.throws(() => saveAnalysis("no-existe", analysis), /FOREIGN KEY constraint failed/u);
+  });
+
+  test("goes away when the review is restarted", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveAnalysis("r1", analysis);
+
+    resetReviewSteps("r1");
+
+    assert.equal(findAnalysis("r1"), undefined);
   });
 });

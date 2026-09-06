@@ -6,7 +6,12 @@ import { resolveRange, revParse } from "../git/git.js";
 import { locatePullRequest } from "../github/pr-query.js";
 import { fetchPullRequest, type PullRequestInfo } from "../github/pull-request.js";
 import { findReviewByHead, findReviewsOfPr } from "../review/db.js";
-import { createSession, requireSession, type ReviewSession } from "../review/session.js";
+import {
+  createSession,
+  requireSession,
+  restartSteps,
+  type ReviewSession,
+} from "../review/session.js";
 
 const inputSchema = {
   pr: z
@@ -16,6 +21,12 @@ const inputSchema = {
     .string()
     .describe(
       "Ruta local del clon (/Users/tu/github/proyecto). Todos los pasos trabajan sobre este checkout.",
+    ),
+  restart: z
+    .boolean()
+    .optional()
+    .describe(
+      "Rehacer la revisión desde cero. Borra el contexto de la tarea, los archivos y todo lo que produjeron los pasos siguientes, conservando el mismo reviewId. Úsalo solo si quieres repetir el trabajo: sin esto, los pasos ya hechos se reutilizan.",
     ),
 };
 
@@ -33,6 +44,7 @@ const outputSchema = {
   headSha: z.string(),
   headRefOid: z.string(),
   resumed: z.boolean(),
+  restarted: z.boolean(),
   cloneBehind: z.boolean(),
   supersedes: z.array(z.string()),
   pipeline: z.object({
@@ -63,6 +75,8 @@ function formatPipeline(pipeline: PullRequestInfo["pipeline"]): string[] {
 
 interface Recognition {
   resumed: boolean;
+  /** Whether what the later steps had produced was thrown away. */
+  restarted: boolean;
   cloneBehind: boolean;
   headRefOid: string;
   /** Reviews of this same pull request made against a head that has moved on. */
@@ -70,7 +84,13 @@ interface Recognition {
 }
 
 /** What the stored reviews say about this pull request beyond its own data. */
-function formatRecognition({ resumed, cloneBehind, headRefOid, supersedes }: Recognition): string[] {
+function formatRecognition({
+  resumed,
+  restarted,
+  cloneBehind,
+  headRefOid,
+  supersedes,
+}: Recognition): string[] {
   const lines: string[] = [`Head en GitHub: ${headRefOid.slice(0, 8)}`];
 
   if (cloneBehind) {
@@ -86,11 +106,18 @@ function formatRecognition({ resumed, cloneBehind, headRefOid, supersedes }: Rec
     );
   }
 
-  lines.push(
-    resumed
-      ? "Ya había una revisión de este mismo head: se retoma, no se abre otra."
-      : "Revisión nueva: no había ninguna de este head.",
-  );
+  if (restarted) {
+    lines.push(
+      "Se rehace desde cero: borrados el contexto de la tarea y los archivos de la",
+      "revisión anterior. El reviewId es el mismo. Empieza otra vez por el paso 2.",
+    );
+  } else {
+    lines.push(
+      resumed
+        ? "Ya había una revisión de este mismo head: se retoma, no se abre otra. Los pasos ya hechos se reutilizan; para repetirlos, vuelve a llamar con restart: true."
+        : "Revisión nueva: no había ninguna de este head.",
+    );
+  }
 
   return lines;
 }
@@ -124,7 +151,7 @@ export function registerStartReview(server: McpServer): void {
       inputSchema,
       outputSchema,
     },
-    async ({ pr, repo }) => {
+    async ({ pr, repo, restart }) => {
       try {
         const location = await locatePullRequest(pr, repo);
 
@@ -182,12 +209,20 @@ export function registerStartReview(server: McpServer): void {
               range,
             });
 
+        // Only an existing review has anything to throw away.
+        const restarted = Boolean(restart && existing);
+
+        if (restarted) {
+          restartSteps(session);
+        }
+
         return {
           content: [
             {
               type: "text",
               text: format(session, info.pipeline, {
                 resumed: Boolean(existing),
+                restarted,
                 cloneBehind,
                 headRefOid: info.headRefOid,
                 supersedes: previous,
@@ -208,6 +243,7 @@ export function registerStartReview(server: McpServer): void {
             headSha: session.headSha,
             headRefOid: session.headRefOid,
             resumed: Boolean(existing),
+            restarted,
             cloneBehind,
             supersedes: previous,
             pipeline: info.pipeline,
