@@ -60,7 +60,7 @@ export function registerCreateDraft(server: McpServer): void {
 
             comments.push(
               existing && existing.title === fresh.title
-                ? { ...fresh, status: existing.status, note: existing.note, body: existing.body, edited: existing.edited }
+                ? { ...fresh, status: existing.status, body: existing.body, edited: existing.edited }
                 : fresh,
             );
           });

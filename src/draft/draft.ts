@@ -6,8 +6,10 @@ export const DRAFT_STATUSES = ["pending", "valid", "discarded", "rework"] as con
  * What the user decided about a comment.
  *
  * "rework" is the interesting one: the comment says something worth saying but
- * not the way it says it, so it goes back to the agent with a note instead of
- * being thrown away.
+ * not the way it says it, so it goes back to the agent instead of being thrown
+ * away. Marking it is the whole message; what to change is something the agent
+ * asks about when it gets there, in the conversation, where the person can
+ * answer in as many words as it takes.
  */
 export type DraftStatus = (typeof DRAFT_STATUSES)[number];
 
@@ -22,8 +24,6 @@ export type DraftComment = {
   /** Editable in the page; this is what gets published. */
   body: string;
   status: DraftStatus;
-  /** What the user asked to change, when status is "rework". */
-  note?: string;
   edited: boolean;
 };
 

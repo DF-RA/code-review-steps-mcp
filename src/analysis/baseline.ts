@@ -36,13 +36,17 @@ export async function extractBaseVersion(
 
   // Files added by the PR do not exist at the base revision, and git archive
   // fails on unknown paths, so ask git which ones are actually there.
+  //
+  // -z is not optional: without it git quotes any path with a space or a
+  // non-ASCII character ("src/a\303\261o.ts"), and that quoted form goes
+  // straight back into git archive, which does not match anything.
   const { stdout } = await execFileAsync(
     "git",
-    ["ls-tree", "-r", "--name-only", baseRef, "--", ...files],
+    ["ls-tree", "-r", "--name-only", "-z", baseRef, "--", ...files],
     { cwd, timeout: ARCHIVE_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024 },
   );
 
-  const existing = stdout.split("\n").filter(Boolean);
+  const existing = stdout.split("\0").filter(Boolean);
 
   if (existing.length === 0) {
     return { dir, files: [], cleanup };

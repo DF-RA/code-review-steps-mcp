@@ -57,6 +57,12 @@ make            # equivale a make help
 | `make deps` | Instala las dependencias de Node |
 | `make build` | Compila `src/` en `dist/` |
 | `make dev` | Compila en modo watch |
+| `make test` | Pasa los tests |
+| `make test-watch` | Pasa los tests en modo watch |
+| `make coverage` | Tests con cobertura y sus umbrales (Node >= 22) |
+| `make lint` | ESLint sobre `src/` y `test/` |
+| `make typecheck` | Tipos de `src/` y `test/` |
+| `make verify` | Lo mismo que la CI: tipos, lint y tests |
 | `make inspect` | Compila y abre el MCP Inspector |
 | `make clean` | Borra `dist/` |
 
@@ -521,7 +527,13 @@ comentario se puede:
 - **editar** — el texto que quede es el que se publicaría;
 - marcar **válido**;
 - marcar **descartado**;
-- marcar **otra vuelta**, con una nota de qué falta, para que el agente lo rehaga.
+- marcar **otra vuelta**, para que el agente lo rehaga.
+
+La página **no tiene ningún campo de texto libre** más allá del editor del propio
+comentario, y es deliberado: cada acción reconstruye la lista entera desde el
+servidor, así que un campo a medio escribir sería algo que hay que salvar de cada
+clic. Marcar es todo el mensaje; qué cambiar te lo pregunta el agente en la
+conversación, donde la respuesta puede ser tan larga como haga falta.
 
 Y un botón para **confirmar** el borrador cuando termines.
 
@@ -547,8 +559,9 @@ Qué decidiste sobre cada comentario. El agente la consulta cuando le avisas de 
 ya revisaste la página.
 
 - Si el borrador no está confirmado, lo dice y espera.
-- Si hay comentarios marcados **otra vuelta**, los devuelve con tu nota para que el
-  agente los rehaga, los registre de nuevo y vuelva a crear el borrador.
+- Si hay comentarios marcados **otra vuelta**, los devuelve y le dice al agente que
+  te pregunte qué cambiar de cada uno antes de rehacerlos, registrarlos de nuevo y
+  volver a crear el borrador.
 - Cuando está confirmado y sin pendientes, devuelve en `approved` los comentarios
   aprobados ya renderizados, listos para publicar.
 
@@ -723,10 +736,84 @@ pero para instalar es más cómodo `make`.
 | --- | --- |
 | `pnpm build` | Compila `src/` en `dist/` y deja el entrypoint ejecutable. |
 | `pnpm dev` | `tsc --watch`. |
-| `pnpm typecheck` | Chequeo de tipos sin generar salida. |
+| `pnpm typecheck` | Chequeo de tipos de `src/` y `test/`, sin generar salida. |
+| `pnpm lint` | ESLint sobre `src/` y `test/`. |
+| `pnpm test` | Pasa los tests. |
+| `pnpm test:watch` | Los mismos tests, en modo watch. |
+| `pnpm test:coverage` | Tests con cobertura y umbrales. Necesita Node >= 22. |
+| `pnpm verify` | `typecheck` + `lint` + `test`, que es lo que corre la CI. |
 | `pnpm start` | Ejecuta el servidor compilado sobre stdio. |
 | `pnpm inspect` | Compila y abre la UI del MCP Inspector contra el servidor. |
 | `pnpm inspect:cli` | Igual, pero en modo CLI: sin navegador, imprime y termina. |
+
+## Tests
+
+```bash
+make test        # o pnpm test
+make test-watch  # se vuelven a pasar al guardar
+make coverage    # con umbrales de cobertura, necesita Node >= 22
+make verify      # tipos + lint + tests, lo mismo que la CI
+```
+
+Se ejecutan con el runner de Node (`node:test`) y **tsx**, que quita los tipos al
+vuelo. No hay paso de compilación previo: los tests importan de `src/` y ven el
+mismo código que se publica.
+
+### Qué se prueba
+
+`test/` espeja `src/`: `test/analysis/sarif.test.ts` prueba `src/analysis/sarif.ts`.
+Lo cubierto es la lógica que decide qué acaba en la revisión —parseo de diffs e
+informes, aislamiento de lo que el PR introdujo, formato de los comentarios,
+sesión y export/import—, no las tools ni los prompts, que son adaptadores del
+SDK sobre esa lógica.
+
+Lo que lee un clon (`git.ts`, `changed-files.ts`, `file-diff.ts`, `baseline.ts`)
+se prueba contra un **repositorio git temporal de verdad**, que crea
+`test/helpers/repo.ts`. Un diff escrito a mano demostraría que el parser sabe
+leer el fixture, no que sabe leer a git; y varios de los casos que importan
+—rutas con espacios o acentos, renombrados, la línea de contexto en blanco que
+es un espacio y no una cadena vacía— solo aparecen si git es quien genera la
+salida.
+
+La página del borrador va como una cadena de JavaScript de navegador dentro de
+`renderPage`, así que la única forma de probar qué pasa al pulsar algo es
+**ejecutarla**: `test/helpers/dom.ts` es el DOM mínimo que ese script toca y
+`test/helpers/page.ts` lo corre contra el **servidor de borrador real**, no
+contra un mock. Un clic en el test hace el mismo POST que haría en el navegador.
+
+Los helpers de `test/helpers/` son cinco:
+
+| Helper | Para qué |
+| --- | --- |
+| `repo.ts` | Un clon git desechable, con identidad fija y sin leer la configuración global |
+| `env.ts` | Cambia variables de entorno para un solo test y las restaura al salir |
+| `session.ts` | Una `ReviewSession` de ejemplo, con y sin los pasos opcionales |
+| `dom.ts` | El DOM mínimo que necesita el script de la página del borrador |
+| `page.ts` | Ejecuta ese script contra el servidor de borrador de verdad |
+
+### Cobertura
+
+`make coverage` falla si baja del 90 % de líneas, el 85 % de ramas o el 90 % de
+funciones. Solo mide los archivos que los tests importan, así que es un trinquete
+sobre lo que ya está cubierto, no una medida del proyecto entero. Y no mide el
+script de la página: para Node es una cadena, no código, aunque los tests sí lo
+ejecuten.
+
+### Escribir un test nuevo
+
+- Un archivo `*.test.ts` dentro de `test/`, en la carpeta que corresponda a la de
+  `src/`. El runner los encuentra solo.
+- Los imports relativos llevan extensión `.js`, igual que en `src/`.
+- El nombre del test dice qué comportamiento se espera, no qué función se llama:
+  lo que se lee cuando falla es esa frase.
+- Nada de tocar `~/.code-review-steps` ni el repositorio: directorios temporales
+  con `mkdtemp` y limpieza en `t.after`.
+
+## Integración continua
+
+`.github/workflows/ci.yml` pasa tipos, lint y tests en **Node 20, 22 y 24**, y
+compila. La cobertura va en un trabajo aparte porque los umbrales
+(`--test-coverage-lines` y compañía) no existen antes de Node 22.
 
 ## MCP Inspector
 
@@ -799,6 +886,8 @@ printf '%s\n' \
 
 ```
 Makefile           # instalación y mantenimiento
+.github/workflows/
+└── ci.yml         # tipos, lint y tests en Node 20, 22 y 24
 commands/
 └── revisar-pr.md  # el slash command, se copia a ~/.claude/commands/
 rulesets/
@@ -849,6 +938,13 @@ src/
 ├── tools/            # un archivo por tool + un index que las registra
 ├── resources/        # un archivo por resource + un index que los registra
 └── prompts/          # un archivo por prompt + un index que los registra
+test/                 # espeja src/: test/analysis/sarif.test.ts prueba src/analysis/sarif.ts
+└── helpers/
+    ├── repo.ts       # repositorio git temporal, para lo que lee un clon de verdad
+    ├── env.ts        # variables de entorno de un solo test, restauradas al salir
+    ├── session.ts    # una ReviewSession de ejemplo
+    ├── dom.ts        # el DOM mínimo que toca el script de la página
+    └── page.ts       # ejecuta ese script contra el servidor de borrador real
 ```
 
 ## Añadir un primitivo nuevo
@@ -876,7 +972,18 @@ src/
   llevan extensión `.js` aunque los archivos sean `.ts`.
 - `registerTool` recibe un *shape* de Zod (un objeto plano de validadores), no un
   `z.object(...)`. El SDK deriva el JSON Schema a partir de él.
-- El código y sus comentarios van en inglés; la documentación, en español.
+- El código y sus comentarios van en inglés; la documentación, en español. Los
+  tests son código: van en inglés, nombres de test incluidos.
+- **Un cambio de comportamiento llega con su test.** Ninguno de los fallos que
+  han aparecido hasta ahora se veía leyendo el código: un cuerpo de varios
+  párrafos que se salía del blockquote de la alerta, o `git ls-tree` citando las
+  rutas con acentos y devolviéndole a git una forma que no casa con nada. Los dos
+  necesitaban que algo los ejecutara.
+- **La página del borrador no guarda estado que no esté en el servidor.** Cada
+  acción reconstruye la lista entera, así que cualquier cosa a medio escribir es
+  algo que hay que salvar de cada clic. Por eso el único campo que queda es el
+  editor del comentario, que tiene su botón de guardar; lo que hace falta contar
+  se cuenta en la conversación, no en la página.
 
 ## Licencia
 

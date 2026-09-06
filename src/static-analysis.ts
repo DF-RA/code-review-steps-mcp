@@ -94,10 +94,13 @@ export async function analyzePullRequest(
   paths: string[],
 ): Promise<PullRequestAnalysis> {
   // Deleted files are gone from the working tree; analyzers would fail on them.
-  const listing = await runGit(["ls-tree", "-r", "--name-only", range.split("...")[1] ?? "HEAD"], cwd).catch(
-    () => "",
-  );
-  const inHead = new Set(listing.split("\n").filter(Boolean));
+  // -z keeps git from quoting paths with spaces or non-ASCII characters, which
+  // would then match none of the paths of the pull request.
+  const listing = await runGit(
+    ["ls-tree", "-r", "--name-only", "-z", range.split("...")[1] ?? "HEAD"],
+    cwd,
+  ).catch(() => "");
+  const inHead = new Set(listing.split("\0").filter(Boolean));
   const present = inHead.size > 0 ? paths.filter((path) => inHead.has(path)) : paths;
 
   const plan = planAnalysis(present);
@@ -108,7 +111,6 @@ export async function analyzePullRequest(
     return { tools: [], skipped: [], findingsByFile: new Map(), unanalyzed };
   }
 
-  const analyzers = [...plan.keys()];
   const after = await Promise.all(
     [...plan].map(([analyzer, files]) => runAnalyzer(analyzer, cwd, files)),
   );

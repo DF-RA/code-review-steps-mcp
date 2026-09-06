@@ -118,7 +118,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const payload = (await readJson(request)) as {
       status?: string;
       body?: string;
-      note?: string;
     };
 
     if (payload.status && (DRAFT_STATUSES as readonly string[]).includes(payload.status)) {
@@ -128,10 +127,6 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (typeof payload.body === "string" && payload.body.trim() !== comment.body) {
       comment.body = payload.body.trim();
       comment.edited = true;
-    }
-
-    if (typeof payload.note === "string") {
-      comment.note = payload.note.trim() || undefined;
     }
 
     send(response, 200, "application/json; charset=utf-8", JSON.stringify(comment));

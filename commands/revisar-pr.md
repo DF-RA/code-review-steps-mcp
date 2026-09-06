@@ -60,9 +60,11 @@ No sigas hasta que yo te avise de que ya lo revisé.
 
 Cuando te avise, llama a `get_draft_status`:
 
-- Si hay comentarios marcados para **otra vuelta**, rehazlos según mi nota,
-  regístralos con `record_file_review` y vuelve a `create_draft`. Se conservan
-  las decisiones que ya tomé sobre los demás.
+- Si hay comentarios marcados para **otra vuelta**, en la página solo los marqué:
+  **pregúntame qué cambiar de cada uno**, de uno en uno y citándome el comentario,
+  antes de tocar nada. Con lo que te diga, rehazlos, regístralos con
+  `record_file_review` y vuelve a `create_draft`. Se conservan las decisiones que
+  ya tomé sobre los demás.
 - Si está confirmado y sin pendientes, dime cuántos comentarios quedaron
   aprobados y **pregúntame qué hago con ellos**, con estas dos opciones:
 

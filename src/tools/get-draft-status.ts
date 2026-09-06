@@ -1,7 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-import { DRAFT_STATUSES, countByStatus, renderDraftComment } from "../draft/draft.js";
+import { countByStatus, renderDraftComment } from "../draft/draft.js";
 import { draftUrl, ensureServer } from "../draft/server.js";
 import { UserFacingError } from "../errors.js";
 import { requireSession } from "../review/session.js";
@@ -26,7 +26,6 @@ const outputSchema = {
       path: z.string().optional(),
       line: z.number().optional(),
       title: z.string(),
-      note: z.string().optional(),
     }),
   ),
   approved: z.array(z.string()),
@@ -38,7 +37,7 @@ export function registerGetDraftStatus(server: McpServer): void {
     {
       title: "Consultar el estado del borrador",
       description:
-        "Octavo paso. Devuelve qué decidió la persona sobre cada comentario del borrador: cuáles dio por válidos, cuáles descartó y cuáles quiere que rehagas, con la nota de qué cambiar. Consúltala cuando la persona te avise de que ya revisó la página. Si hay comentarios marcados para otra vuelta, rehazlos, regístralos de nuevo con record_file_review y vuelve a crear el borrador.",
+        "Octavo paso. Devuelve qué decidió la persona sobre cada comentario del borrador: cuáles dio por válidos, cuáles descartó y cuáles quiere que rehagas. Consúltala cuando la persona te avise de que ya revisó la página. En la página solo se marca; lo que hay que cambiar se lo preguntas tú aquí, uno por uno, antes de rehacer nada. Después regístralos de nuevo con record_file_review y vuelve a crear el borrador.",
       inputSchema,
       outputSchema,
     },
@@ -63,7 +62,6 @@ export function registerGetDraftStatus(server: McpServer): void {
             path: comment.path,
             line: comment.line,
             title: comment.title,
-            note: comment.note,
           }));
 
         const approved = draft.comments
@@ -84,12 +82,14 @@ export function registerGetDraftStatus(server: McpServer): void {
             lines.push(
               `  · ${comment.path ?? "PR"}${comment.line ? ` L${comment.line}` : ""} — ${comment.title}`,
             );
-            lines.push(`      ${comment.note ?? "(sin indicaciones; pregúntale qué cambiar)"}`);
           }
 
+          // The page has no field to write in: what to change is asked here,
+          // where the answer can be as long as it needs to be.
           lines.push(
             "",
-            "Rehazlos, regístralos con record_file_review y vuelve a llamar a create_draft: se conservan las decisiones ya tomadas sobre los demás.",
+            "La página solo permite marcarlos. Pregúntale qué cambiar de cada uno, de uno en uno y citando el comentario, antes de tocarlos.",
+            "Luego rehazlos, regístralos con record_file_review y vuelve a llamar a create_draft: se conservan las decisiones ya tomadas sobre los demás.",
           );
         }
 

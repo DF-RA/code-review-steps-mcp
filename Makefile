@@ -90,6 +90,30 @@ uninstall: ## Quita el servidor y el comando
 dev: ## Compila en modo watch
 	pnpm dev
 
+.PHONY: test
+test: ## Pasa los tests
+	pnpm test
+
+.PHONY: test-watch
+test-watch: ## Pasa los tests en modo watch
+	pnpm test:watch
+
+.PHONY: coverage
+coverage: ## Pasa los tests con cobertura y sus umbrales (necesita Node >= 22)
+	pnpm test:coverage
+
+.PHONY: lint
+lint: ## Pasa ESLint sobre src/ y test/
+	pnpm lint
+
+.PHONY: typecheck
+typecheck: ## Comprueba los tipos de src/ y test/
+	pnpm typecheck
+
+.PHONY: verify
+verify: ## Lo mismo que la CI: tipos, lint y tests
+	pnpm verify
+
 .PHONY: inspect
 inspect: build ## Abre el MCP Inspector contra el servidor
 	pnpm inspect

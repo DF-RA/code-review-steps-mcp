@@ -1,0 +1,12 @@
+{
+  // Typechecks the tests together with the source. The build uses
+  // tsconfig.json, which only takes src/, so nothing of this reaches dist/.
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": ".",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

@@ -6,7 +6,7 @@ import { draftUrl, ensureServer } from "../draft/server.js";
 import { UserFacingError } from "../errors.js";
 import { refExists } from "../git/git.js";
 import { countFixes } from "../review/fixes.js";
-import { defaultPath, readExport, writeExport } from "../review/persistence.js";
+import { readExport, writeExport } from "../review/persistence.js";
 import { adoptSession, requireSession, type ReviewSession } from "../review/session.js";
 
 /** Where the review got to, so continuing it does not mean guessing. */

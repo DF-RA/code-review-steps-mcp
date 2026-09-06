@@ -1,0 +1,69 @@
+# Lo mismo que ejecuta `make verify` en local, sobre cada versión de Node que
+# el paquete declara soportar.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      # Un fallo en una versión no oculta el resultado de las otras.
+      fail-fast: false
+      matrix:
+        node: ["20", "22", "24"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ matrix.node }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm typecheck
+
+      - run: pnpm lint
+
+      - run: pnpm test
+
+      # Después de los tests: que compile es necesario, pero lo que dice si el
+      # servidor funciona son ellos.
+      - run: pnpm build
+
+  coverage:
+    name: Cobertura
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: pnpm/action-setup@v4
+
+      # Los umbrales de cobertura (--test-coverage-lines y compañía) no existen
+      # antes de Node 22, así que este trabajo va aparte de la matriz.
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "24"
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm test:coverage

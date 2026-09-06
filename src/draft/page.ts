@@ -126,8 +126,6 @@ button.on[data-act="discarded"] { background:var(--danger); border-color:var(--d
 button.on[data-act="rework"] { background:var(--warn); border-color:var(--warn); color:#111; }
 textarea { width:100%; min-height:110px; font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace;
   padding:10px; border-radius:8px; border:1px solid var(--line); background:var(--bg); color:var(--fg); }
-input[type=text] { width:100%; font:inherit; font-size:13px; padding:7px 10px; border-radius:7px;
-  border:1px solid var(--warn); background:var(--bg); color:var(--fg); margin-top:8px; }
 .hidden { display:none; }
 .confirm { margin:32px 0 60px; padding-top:20px; border-top:1px solid var(--line); }
 button.primary { background:var(--accent); border-color:var(--accent); color:#fff; padding:9px 18px; font-size:14px; }
@@ -170,10 +168,27 @@ ${MARKDOWN_JS}
 const REVIEW = ${JSON.stringify(session.id)};
 const SEV = { blocker: "🛑 Bloqueante", issue: "⚠️ Problema", suggestion: "💡 Sugerencia", question: "❓ Duda" };
 
-async function save(id, payload) {
-  await fetch("/r/" + REVIEW + "/comment/" + id, {
+async function post(path, payload) {
+  await fetch("/r/" + REVIEW + "/" + path, {
     method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(payload),
   });
+}
+
+// The body being edited, while it is only in the browser.
+//
+// Every action rebuilds the whole list from the server, so without this a click
+// on one comment throws away the edit you had half written on another. Keyed by
+// comment id, it outlives the elements it belongs to.
+const typed = new Map();
+
+function stateOf(id) {
+  let state = typed.get(id);
+  if (!state) { state = { body: undefined, editing: false }; typed.set(id, state); }
+  return state;
+}
+
+async function save(id, payload) {
+  await post("comment/" + id, payload);
   await load();
 }
 
@@ -257,15 +272,13 @@ function card(comment) {
     '<div class="body"><strong>' + comment.title.replace(/</g,"&lt;") + '</strong>' +
     renderMarkdown(comment.body) + '</div>';
 
-  const editor = document.createElement("textarea");
-  editor.className = "hidden";
-  editor.value = comment.body;
+  // What the server has, unless there is something typed over it.
+  const state = stateOf(comment.id);
 
-  const note = document.createElement("input");
-  note.type = "text";
-  note.placeholder = "¿Qué quieres que cambie el agente?";
-  note.value = comment.note || "";
-  note.className = comment.status === "rework" ? "" : "hidden";
+  const editor = document.createElement("textarea");
+  editor.className = state.editing ? "" : "hidden";
+  editor.value = state.body !== undefined ? state.body : comment.body;
+  editor.oninput = () => { state.body = editor.value; };
 
   const actions = document.createElement("div");
   actions.className = "actions";
@@ -274,21 +287,33 @@ function card(comment) {
     const b = document.createElement("button");
     b.dataset.act = act; b.textContent = label;
     if (comment.status === act) b.classList.add("on");
-    b.onclick = () => save(comment.id, { status: comment.status === act ? "pending" : act, note: note.value });
+    b.onclick = () => save(comment.id, { status: comment.status === act ? "pending" : act });
     actions.appendChild(b);
   }
 
   const edit = document.createElement("button");
-  edit.textContent = "Editar";
+  edit.textContent = state.editing ? "Guardar" : "Editar";
   edit.onclick = () => {
-    if (editor.classList.contains("hidden")) { editor.classList.remove("hidden"); edit.textContent = "Guardar"; }
-    else { save(comment.id, { body: editor.value }); }
+    if (!state.editing) {
+      state.editing = true;
+      editor.classList.remove("hidden");
+      edit.textContent = "Guardar";
+      editor.focus();
+      return;
+    }
+
+    const body = editor.value;
+
+    // Stored: what is on the server from here on is the good copy.
+    state.editing = false;
+    state.body = undefined;
+    // Returned like every other handler here, so the caller can wait for it.
+    return save(comment.id, { body: body });
   };
   actions.appendChild(edit);
 
   el.appendChild(editor);
   el.appendChild(actions);
-  el.appendChild(note);
   return el;
 }
 
@@ -321,9 +346,7 @@ function fixRow(fix) {
 }
 
 async function saveFix(id, payload) {
-  await fetch("/r/" + REVIEW + "/fix/" + id, {
-    method: "POST", headers: {"content-type":"application/json"}, body: JSON.stringify(payload),
-  });
+  await post("fix/" + id, payload);
   await load();
 }
 
