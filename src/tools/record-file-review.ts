@@ -55,7 +55,7 @@ export function registerRecordFileReview(server: McpServer): void {
   server.registerTool(
     "record_file_review",
     {
-      title: "Registrar la revisión de un archivo",
+      title: "[Step 6.2] Registrar la revisión de un archivo",
       description:
         "Guarda en la revisión los comentarios que el agente concluyó sobre un archivo, ya con el formato con el que se publicarían. Llámala siempre después de revisar un archivo con el prompt review_file, incluso si no hay nada que señalar: así queda constancia de qué se revisó y qué falta. No publica nada en GitHub.",
       inputSchema,

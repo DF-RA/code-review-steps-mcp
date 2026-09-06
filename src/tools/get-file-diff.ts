@@ -9,7 +9,9 @@ import { requireAnalysis, requireFiles, requireSession } from "../review/session
 
 const inputSchema = {
   reviewId: z.string().describe("El reviewId que devolvió start_review."),
-  path: z.string().describe("Ruta del archivo, de las que devolvió get_pr_files."),
+  pathId: z
+    .string()
+    .describe("Identificador del archivo (pathId), de los que devolvió get_pr_files."),
   offset: z
     .number()
     .int()
@@ -90,24 +92,32 @@ export function registerGetFileDiff(server: McpServer): void {
     {
       title: "[Step 5] Ver el diff de un archivo",
       description:
-        "Quinto paso, uno por archivo. Devuelve el diff de un archivo del pull request junto con los problemas que analyze_pr detectó en él, para revisarlo con todo delante. Los diffs largos llegan por partes cortadas entre bloques de cambio. Lo que las herramientas no cubren —diseño, lógica de negocio, si los tests prueban lo que dicen— es lo que tienes que valorar tú a partir del diff. Requiere el reviewId y haber llamado a get_pr_files y analyze_pr.",
+        "Quinto paso, uno por archivo. Devuelve el diff de un archivo del pull request junto con los problemas que analyze_pr detectó en él, para revisarlo con todo delante. El archivo se indica con su pathId, no con su ruta: get_pr_files devuelve uno por archivo. Los diffs largos llegan por partes cortadas entre bloques de cambio. Lo que las herramientas no cubren —diseño, lógica de negocio, si los tests prueban lo que dicen— es lo que tienes que valorar tú a partir del diff. Requiere el reviewId y haber llamado a get_pr_files y analyze_pr.",
       inputSchema,
       outputSchema,
     },
-    async ({ reviewId, path, offset }) => {
+    async ({ reviewId, pathId, offset }) => {
       try {
         const session = requireSession(reviewId);
         const files = requireFiles(session);
         const analysis = requireAnalysis(session);
 
-        const cleanPath = path.trim();
-        const known = files.find((file) => file.path === cleanPath);
+        const wanted = pathId.trim();
+        const known = files.find((file) => file.pathId === wanted);
 
         if (!known) {
+          // A path instead of its id is the easy mistake to make, so say so
+          // rather than just reporting an id nobody recognises.
+          const byPath = files.find((file) => file.path === wanted);
+
           throw new UserFacingError(
-            `"${cleanPath}" no está entre los ${files.length} archivos del PR. Usa una ruta de las que devolvió get_pr_files.`,
+            byPath
+              ? `"${wanted}" es la ruta, no el pathId. El de ese archivo es ${byPath.pathId}.`
+              : `No hay ningún archivo con pathId "${wanted}" entre los ${files.length} del PR. Usa uno de los que devolvió get_pr_files.`,
           );
         }
+
+        const cleanPath = known.path;
 
         if (known.status === "deleted") {
           throw new UserFacingError(

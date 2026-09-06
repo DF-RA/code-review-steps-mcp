@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS context (
   url       TEXT
 );
 
-CREATE TABLE IF NOT EXISTS review_file (
+CREATE TABLE IF NOT EXISTS changed_file (
   review_id     TEXT    NOT NULL REFERENCES reviews (id) ON DELETE CASCADE,
   path_id       TEXT    NOT NULL,
   path          TEXT    NOT NULL,
@@ -90,7 +90,7 @@ CREATE TABLE IF NOT EXISTS file_diff (
   total_hunks INTEGER NOT NULL,
   fetched_at  INTEGER NOT NULL,
   PRIMARY KEY (review_id, path_id),
-  FOREIGN KEY (review_id, path_id) REFERENCES review_file (review_id, path_id) ON DELETE CASCADE
+  FOREIGN KEY (review_id, path_id) REFERENCES changed_file (review_id, path_id) ON DELETE CASCADE
 );
 `;
 
@@ -109,6 +109,28 @@ function ensureColumn(db: DatabaseSync, table: string, column: string, definitio
 
   if (!columns.some((existing) => existing.name === column)) {
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+/**
+ * Renames tables that shipped under another name, before the schema runs.
+ *
+ * Order matters: CREATE TABLE IF NOT EXISTS would make an empty table under the
+ * new name first, and then there would be nowhere to rename the old one to.
+ */
+function renameLegacyTables(db: DatabaseSync): void {
+  const names = new Set(
+    (
+      db.prepare(`SELECT name FROM sqlite_master WHERE type = 'table'`).all() as unknown as {
+        name: string;
+      }[]
+    ).map((row) => row.name),
+  );
+
+  // review_file collided with the review_file prompt, which is a different
+  // thing: this one is the list of files a pull request changes.
+  if (names.has("review_file") && !names.has("changed_file")) {
+    db.exec("ALTER TABLE review_file RENAME TO changed_file");
   }
 }
 
@@ -149,6 +171,7 @@ function connect(): DatabaseSync {
   // SQLite ignores foreign keys unless they are switched on per connection, and
   // a context without its review is exactly what the key is there to prevent.
   opened.exec("PRAGMA foreign_keys = ON");
+  renameLegacyTables(opened);
   opened.exec(SCHEMA);
   migrate(opened);
 
@@ -402,11 +425,11 @@ export function saveReviewFiles(reviewId: string, files: ChangedFile[]): void {
   db.exec("BEGIN");
 
   try {
-    db.prepare(`DELETE FROM review_file WHERE review_id = ?`).run(reviewId);
+    db.prepare(`DELETE FROM changed_file WHERE review_id = ?`).run(reviewId);
     db.prepare(`UPDATE reviews SET files_listed_at = ? WHERE id = ?`).run(Date.now(), reviewId);
 
     const insert = db.prepare(
-      `INSERT INTO review_file (review_id, path_id, path, status, previous_path, position)
+      `INSERT INTO changed_file (review_id, path_id, path, status, previous_path, position)
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
 
@@ -443,7 +466,7 @@ export function findReviewFiles(reviewId: string): ChangedFile[] | undefined {
   const rows = connect()
     .prepare(
       `SELECT path_id, path, status, previous_path
-         FROM review_file WHERE review_id = ? ORDER BY position`,
+         FROM changed_file WHERE review_id = ? ORDER BY position`,
     )
     .all(reviewId) as unknown as FileRow[];
 
@@ -474,7 +497,7 @@ export function resetReviewSteps(reviewId: string): void {
 
   try {
     db.prepare(`DELETE FROM analyze_pr WHERE review_id = ?`).run(reviewId);
-    db.prepare(`DELETE FROM review_file WHERE review_id = ?`).run(reviewId);
+    db.prepare(`DELETE FROM changed_file WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM context WHERE review_id = ?`).run(reviewId);
     db.prepare(`UPDATE reviews SET files_listed_at = NULL WHERE id = ?`).run(reviewId);
 
@@ -593,7 +616,7 @@ export function findFetchedPathIds(reviewId: string): string[] {
     .prepare(
       `SELECT d.path_id AS path_id
          FROM file_diff d
-         JOIN review_file f ON f.review_id = d.review_id AND f.path_id = d.path_id
+         JOIN changed_file f ON f.review_id = d.review_id AND f.path_id = d.path_id
         WHERE d.review_id = ?
         ORDER BY f.position`,
     )

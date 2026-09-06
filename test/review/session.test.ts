@@ -172,7 +172,9 @@ describe("the session cache", () => {
 
     const first = createSession(otherReview(1000));
 
-    for (let n = 0; n < 20; n += 1) {
+    // Twice the capacity, so it does not matter how full the cache already was
+    // when this test started: nothing older than these survives.
+    for (let n = 0; n < 40; n += 1) {
       createSession(otherReview(n));
     }
 

@@ -277,7 +277,7 @@ consume lo que produjo el anterior.
 2. task_context(reviewId)          → qué pedía la tarea (prompt + record_task_context)
 3. get_pr_files(reviewId)          → archivos del PR
 4. analyze_pr(reviewId)            → problemas detectados por las herramientas
-5. get_file_diff(reviewId, path)   → diff + los problemas de ese archivo
+5. get_file_diff(reviewId, pathId) → diff + los problemas de ese archivo
 6. review_file(reviewId, path)     → el agente analiza y registra sus comentarios
    (5 y 6, uno por archivo)
 7. create_draft(reviewId)          → borrador en una página local, para revisarlo
@@ -417,12 +417,16 @@ ser contexto del resto del flujo.
   regla. Con el ajuste quedan 4, todos accionables. Para usar el ruleset de tu
   proyecto, apunta `CODE_REVIEW_MCP_PMD_RULESET` a su ruta.
 
-### 5. `get_file_diff(reviewId, path)`
+### 5. `get_file_diff(reviewId, pathId)`
 
 El diff de un archivo **junto con los problemas que el paso 3 detectó en él**.
 Es lo que necesitas para revisar ese archivo, en una sola respuesta.
 
+- El archivo se indica con su `pathId`, no con su ruta: `get_pr_files` devuelve
+  uno por archivo. Si le pasas la ruta, el error te dice cuál es su `pathId`.
 - Los problemas no se recalculan: vienen del análisis de la revisión.
+- El diff completo se guarda la primera vez, así que pedir otra parte del mismo
+  archivo no vuelve a llamar a git.
 - Los diffs largos llegan **por partes**, cortadas entre bloques de cambio
   (`@@`), nunca a mitad de uno; cada parte repite la cabecera del archivo. La
   respuesta trae `totalHunks`, `hunksIncluded`, `hasMore` y `nextOffset`: se pide
@@ -855,8 +859,8 @@ pnpm inspect:cli --method tools/call --tool-name get_pr_files \
 
 # Diff de uno de esos archivos
 pnpm inspect:cli --method tools/call --tool-name get_file_diff \
-  --tool-arg pr=200 --tool-arg repo=/Users/tu/github/tu-repo \
-  --tool-arg path=src/main/java/com/ejemplo/Servicio.java
+  --tool-arg reviewId=<el que devolvió start_review> \
+  --tool-arg pathId=<el pathId que devolvió get_pr_files>
 
 # Leer el resource
 pnpm inspect:cli --method resources/read --uri review://checklist

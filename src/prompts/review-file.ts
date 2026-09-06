@@ -114,7 +114,7 @@ export function registerReviewFilePrompt(server: McpServer): void {
   server.registerPrompt(
     "review_file",
     {
-      title: "Revisar un archivo del PR",
+      title: "[Step 6.1] Revisar un archivo del PR",
       description:
         "Quinto paso. Construye la revisión de un archivo con todo el contexto: su estado en el PR, los problemas que detectaron las herramientas, el diff y la descripción de la tarea. El agente analiza desde cinco roles y registra el resultado con record_file_review.",
       argsSchema: {
