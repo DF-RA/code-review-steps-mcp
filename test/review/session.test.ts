@@ -10,6 +10,7 @@ import {
   requireSession,
   requireTaskContext,
 } from "../../src/review/session.js";
+import { saveTaskContext } from "../../src/review/db.js";
 import { useTempDb } from "../helpers/db.js";
 import { sessionData } from "../helpers/session.js";
 
@@ -144,6 +145,25 @@ describe("the session cache", () => {
     createSession(otherReview(2));
 
     assert.equal(requireSession(waiting.id), waiting);
+  });
+
+  test("brings step 2 back when it rebuilds a session from the database", (t) => {
+    useTempDb(t);
+
+    const session = createSession(sessionData());
+
+    saveTaskContext(session.id, { found: true, code: "PROJ-1234", summary: "Lo que pide." });
+
+    // Evicting it is what a restart looks like from in here.
+    for (let n = 0; n < 20; n += 1) {
+      createSession(otherReview(n));
+    }
+
+    const back = requireSession(session.id);
+
+    assert.notEqual(back, session);
+    assert.equal(back.taskContext?.code, "PROJ-1234");
+    assert.equal(back.taskContext?.summary, "Lo que pide.");
   });
 
   test("evicts the least recently used once it is full, and rebuilds it from the row", (t) => {

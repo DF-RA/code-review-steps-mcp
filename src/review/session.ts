@@ -7,7 +7,7 @@ import type { Draft } from "../draft/draft.js";
 import type { FixItem } from "./fixes.js";
 import type { TaskContext } from "./task-context.js";
 import { UserFacingError } from "../errors.js";
-import { findReviewById, saveReview } from "./db.js";
+import { findReviewById, findTaskContext, saveReview, saveTaskContext } from "./db.js";
 
 /**
  * State of one review, shared by every step.
@@ -114,6 +114,12 @@ function remember(session: ReviewSession): ReviewSession {
   touch(session.id);
   saveReview(session);
 
+  // A session restored from a file brings step 2 with it; the row has to exist
+  // before the context that points at it.
+  if (session.taskContext) {
+    saveTaskContext(session.id, session.taskContext);
+  }
+
   return session;
 }
 
@@ -145,12 +151,15 @@ export function requireSession(reviewId: string): ReviewSession {
     );
   }
 
-  // Rebuilt from the row: what the later steps had in memory is not in it.
-  prune();
-  sessions.set(stored.id, stored);
-  touch(stored.id);
+  // Rebuilt from the rows: the steps that already persist come back with it,
+  // the ones still living in memory do not.
+  const session: ReviewSession = { ...stored, taskContext: findTaskContext(stored.id) };
 
-  return stored;
+  prune();
+  sessions.set(session.id, session);
+  touch(session.id);
+
+  return session;
 }
 
 export function requireTaskContext(session: ReviewSession): TaskContext {

@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { UserFacingError } from "../errors.js";
+import type { TaskContext } from "./task-context.js";
 import type { ReviewSession } from "./session.js";
 
 /**
@@ -39,6 +40,16 @@ CREATE TABLE IF NOT EXISTS reviews (
   UNIQUE (repo_path, pr_number, head_ref_oid)
 );
 CREATE INDEX IF NOT EXISTS reviews_by_pr ON reviews (repo_path, pr_number);
+
+CREATE TABLE IF NOT EXISTS context (
+  review_id TEXT    PRIMARY KEY REFERENCES reviews (id) ON DELETE CASCADE,
+  found     INTEGER NOT NULL,
+  reason    TEXT,
+  code      TEXT,
+  title     TEXT,
+  summary   TEXT,
+  url       TEXT
+);
 `;
 
 let db: DatabaseSync | undefined;
@@ -60,6 +71,10 @@ function connect(): DatabaseSync {
   // the same file open. The timeout covers the writes that do collide.
   opened.exec("PRAGMA journal_mode = WAL");
   opened.exec("PRAGMA busy_timeout = 5000");
+
+  // SQLite ignores foreign keys unless they are switched on per connection, and
+  // a context without its review is exactly what the key is there to prevent.
+  opened.exec("PRAGMA foreign_keys = ON");
   opened.exec(SCHEMA);
 
   db = opened;
@@ -212,4 +227,74 @@ export function findReviewsOfPr(repoPath: string, prNumber: number): StoredRevie
     .all(repoPath, prNumber) as unknown as Row[];
 
   return rows.map(toReview);
+}
+
+interface ContextRow {
+  found: number;
+  reason: string | null;
+  code: string | null;
+  title: string | null;
+  summary: string | null;
+  url: string | null;
+}
+
+/** Absent columns come back as null; the domain type says undefined. */
+function text(value: string | null): string | undefined {
+  return value ?? undefined;
+}
+
+/**
+ * Stores what step 2 found out about the task.
+ *
+ * One row per review, replaced whole: recording the context again is correcting
+ * it, not adding a second one. The review has to exist first — the foreign key
+ * is what says a context belongs to a review and nothing else.
+ */
+export function saveTaskContext(reviewId: string, context: TaskContext): void {
+  connect()
+    .prepare(
+      `INSERT INTO context (review_id, found, reason, code, title, summary, url)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (review_id) DO UPDATE SET
+         found = excluded.found,
+         reason = excluded.reason,
+         code = excluded.code,
+         title = excluded.title,
+         summary = excluded.summary,
+         url = excluded.url`,
+    )
+    .run(
+      reviewId,
+      context.found ? 1 : 0,
+      context.reason ?? null,
+      context.code ?? null,
+      context.title ?? null,
+      context.summary ?? null,
+      context.url ?? null,
+    );
+}
+
+/**
+ * The context of a review, or undefined when step 2 has not run.
+ *
+ * No row and a row saying found: false are different answers: the first means
+ * nobody looked, the second that somebody looked and there was nothing.
+ */
+export function findTaskContext(reviewId: string): TaskContext | undefined {
+  const row = connect()
+    .prepare(`SELECT * FROM context WHERE review_id = ?`)
+    .get(reviewId) as unknown as ContextRow | undefined;
+
+  if (!row) {
+    return undefined;
+  }
+
+  return {
+    found: row.found === 1,
+    reason: text(row.reason),
+    code: text(row.code),
+    title: text(row.title),
+    summary: text(row.summary),
+    url: text(row.url),
+  };
 }
