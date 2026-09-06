@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ruleset name="code-review-steps-java"
+         xmlns="http://pmd.sourceforge.net/ruleset/2.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://pmd.sourceforge.net/ruleset/2.0.0 https://pmd.sourceforge.io/ruleset_2_0_0.xsd">
+
+  <description>
+    PMD quickstart with the naming rules tuned for tests.
+
+    Starts from the set PMD itself maintains, and only changes what produced
+    pure noise on real pull requests. Anything removed here is documented with
+    the reason: a rule that fires on correct code trains people to ignore the
+    whole report.
+  </description>
+
+  <rule ref="rulesets/java/quickstart.xml">
+    <!-- Re-added below with test patterns that allow underscores. -->
+    <exclude name="MethodNamingConventions"/>
+  </rule>
+
+  <!--
+    Test names like `execute_noRow_returnsEmpty` are a deliberate convention:
+    method_scenario_expectation. The default pattern rejects the underscore, so
+    a well-named test suite shows up as dozens of high severity findings.
+    Production methods keep the strict camelCase pattern.
+  -->
+  <rule ref="category/java/codestyle.xml/MethodNamingConventions">
+    <properties>
+      <property name="junit3TestPattern" value="[a-z][a-zA-Z0-9]*(_[a-zA-Z0-9]+)*"/>
+      <property name="junit4TestPattern" value="[a-z][a-zA-Z0-9]*(_[a-zA-Z0-9]+)*"/>
+      <property name="junit5TestPattern" value="[a-z][a-zA-Z0-9]*(_[a-zA-Z0-9]+)*"/>
+    </properties>
+  </rule>
+
+</ruleset>

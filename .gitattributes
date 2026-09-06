@@ -1,0 +1,13 @@
+# Todo el repositorio se trabaja desde bash (WSL, Linux, macOS): LF siempre.
+# Sin esto, un Git de Windows con core.autocrlf=true reescribe el árbol a CRLF
+# y el siguiente `git status` marca como modificados archivos que nadie tocó.
+* text=auto eol=lf
+
+# Explícito para lo que rompe de forma no obvia: un "\r" en el shebang deja el
+# intérprete como "#!/usr/bin/env bash\r", que no existe.
+*.sh     text eol=lf
+Makefile text eol=lf
+
+# Generado: GitHub lo colapsa en el diff del PR y no ensucia la revisión.
+# Se deja diffeable en local a propósito, para que `git diff` siga sirviendo.
+pnpm-lock.yaml linguist-generated=true
