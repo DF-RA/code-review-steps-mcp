@@ -16,7 +16,7 @@ export function sessionData(
     baseSha: "a".repeat(40),
     headSha: "b".repeat(40),
     headRefOid: "b".repeat(40),
-    range: "origin/main...origin/feature/rechazo",
+    range: `${"a".repeat(40)}...${"b".repeat(40)}`,
     ...overrides,
   };
 }

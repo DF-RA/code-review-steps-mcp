@@ -5,6 +5,7 @@ import { join, sep } from "node:path";
 import { describe, test } from "node:test";
 
 import type { Finding } from "../../src/analysis/types.js";
+import { pathId } from "../../src/changed-files.js";
 import { UserFacingError } from "../../src/errors.js";
 import type { ReviewComment } from "../../src/review/comments.js";
 import {
@@ -43,7 +44,7 @@ function session(overrides: Partial<ReviewSession> = {}): ReviewSession {
 /** A session with every optional step filled in, Maps included. */
 function fullSession(): ReviewSession {
   return session({
-    files: [{ path: "src/app.ts", status: "modified" }],
+    files: [{ pathId: pathId("src/app.ts"), path: "src/app.ts", status: "modified" }],
     taskContext: { found: true, code: "PROJ-1", title: "Tarea" },
     fixes: [{ id: "f1", severity: "issue", title: "t", body: "b", status: "pending" }],
     draft: { comments: [], confirmed: false, createdAt: 1 },

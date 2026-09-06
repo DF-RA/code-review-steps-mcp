@@ -143,9 +143,16 @@ export function registerStartReview(server: McpServer): void {
         }
 
         const cwd = location.target.cwd;
-        const range = await resolveRange(cwd, info.targetBranch, info.sourceBranch);
-        const [baseRef, headRef] = range.split("...");
+
+        // Branch names only get us as far as the commits they point at today.
+        // From here on the review travels on the commits themselves: a name
+        // moves under a later `git fetch`, and then a step would be reading a
+        // different diff than the one this review says it is about.
+        const refRange = await resolveRange(cwd, info.targetBranch, info.sourceBranch);
+        const [baseRef, headRef] = refRange.split("...");
+        const baseSha = await revParse(baseRef ?? info.targetBranch, cwd);
         const headSha = await revParse(headRef ?? info.sourceBranch, cwd);
+        const range = `${baseSha}...${headSha}`;
 
         // The clone is what every later step reads, so it having a different
         // head than GitHub is worth saying now and not three steps in.
@@ -169,7 +176,7 @@ export function registerStartReview(server: McpServer): void {
               repoPath: cwd,
               targetBranch: info.targetBranch,
               sourceBranch: info.sourceBranch,
-              baseSha: await revParse(baseRef ?? info.targetBranch, cwd),
+              baseSha,
               headSha,
               headRefOid: info.headRefOid,
               range,

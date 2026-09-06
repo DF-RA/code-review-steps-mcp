@@ -3,8 +3,13 @@ import { rm, symlink, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import { describe, test } from "node:test";
 
-import { listChangedFiles } from "../src/changed-files.js";
+import { listChangedFiles, pathId, type ChangedFile, type ChangeStatus } from "../src/changed-files.js";
 import { createTempRepo, type TempRepo } from "./helpers/repo.js";
+
+/** The shape expected back, with the id the parser derives from the path. */
+function file(path: string, status: ChangeStatus, previousPath?: string): ChangedFile {
+  return { pathId: pathId(path), path, status, ...(previousPath ? { previousPath } : {}) };
+}
 
 /** A clone with a base commit, ready for the pull request commit on top. */
 async function repoWithBase(
@@ -41,7 +46,7 @@ describe("listChangedFiles", () => {
     await repo.write("b.ts", "dos\n");
     await repo.commit("añade b");
 
-    assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [{ path: "b.ts", status: "added" }]);
+    assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [file("b.ts", "added")]);
   });
 
   test("reports a modified file", async (t) => {
@@ -50,7 +55,7 @@ describe("listChangedFiles", () => {
     await repo.write("a.ts", "uno y medio\n");
     await repo.commit("toca a");
 
-    assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [{ path: "a.ts", status: "modified" }]);
+    assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [file("a.ts", "modified")]);
   });
 
   test("reports a deleted file", async (t) => {
@@ -59,7 +64,7 @@ describe("listChangedFiles", () => {
     await rm(join(repo.dir, "b.ts"));
     await repo.commit("borra b");
 
-    assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [{ path: "b.ts", status: "deleted" }]);
+    assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [file("b.ts", "deleted")]);
   });
 
   test("reports a rename with the path it came from", async (t) => {
@@ -69,7 +74,7 @@ describe("listChangedFiles", () => {
     await repo.commit("renombra");
 
     assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [
-      { path: "nuevo.ts", status: "renamed", previousPath: "viejo.ts" },
+      file("nuevo.ts", "renamed", "viejo.ts"),
     ]);
   });
 
@@ -81,7 +86,7 @@ describe("listChangedFiles", () => {
     await repo.commit("convierte en enlace");
 
     assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [
-      { path: "enlace.ts", status: "type-changed" },
+      file("enlace.ts", "type-changed"),
     ]);
   });
 
@@ -94,7 +99,7 @@ describe("listChangedFiles", () => {
     await repo.commit("añade rutas raras");
 
     assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [
-      { path: "src/con espacios/año ñ.ts", status: "added" },
+      file("src/con espacios/año ñ.ts", "added"),
     ]);
   });
 
@@ -107,9 +112,9 @@ describe("listChangedFiles", () => {
     await repo.commit("varios cambios");
 
     assert.deepEqual(await listChangedFiles(repo.dir, RANGE), [
-      { path: "a.ts", status: "modified" },
-      { path: "b.ts", status: "deleted" },
-      { path: "c.ts", status: "added" },
+      file("a.ts", "modified"),
+      file("b.ts", "deleted"),
+      file("c.ts", "added"),
     ]);
   });
 
@@ -126,7 +131,7 @@ describe("listChangedFiles", () => {
 
     // main.ts landed on main after the branch started: it is not of the PR.
     assert.deepEqual(await listChangedFiles(repo.dir, "main...feature"), [
-      { path: "feature.ts", status: "added" },
+      file("feature.ts", "added"),
     ]);
   });
 });

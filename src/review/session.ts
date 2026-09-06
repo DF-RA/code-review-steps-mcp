@@ -7,7 +7,14 @@ import type { Draft } from "../draft/draft.js";
 import type { FixItem } from "./fixes.js";
 import type { TaskContext } from "./task-context.js";
 import { UserFacingError } from "../errors.js";
-import { findReviewById, findTaskContext, saveReview, saveTaskContext } from "./db.js";
+import {
+  findReviewById,
+  findReviewFiles,
+  findTaskContext,
+  hasTaskContext,
+  saveReview,
+  saveTaskContext,
+} from "./db.js";
 
 /**
  * State of one review, shared by every step.
@@ -153,7 +160,11 @@ export function requireSession(reviewId: string): ReviewSession {
 
   // Rebuilt from the rows: the steps that already persist come back with it,
   // the ones still living in memory do not.
-  const session: ReviewSession = { ...stored, taskContext: findTaskContext(stored.id) };
+  const session: ReviewSession = {
+    ...stored,
+    taskContext: findTaskContext(stored.id),
+    files: findReviewFiles(stored.id),
+  };
 
   prune();
   sessions.set(session.id, session);
@@ -170,6 +181,19 @@ export function requireTaskContext(session: ReviewSession): TaskContext {
   }
 
   return session.taskContext;
+}
+
+/**
+ * Step 2 is a prerequisite of step 3 by order, not by data: nothing there reads
+ * what the task said. So the guard asks the database whether it was recorded
+ * and stops at that, instead of loading a context it will not look at.
+ */
+export function requireRecordedTaskContext(reviewId: string): void {
+  if (!hasTaskContext(reviewId)) {
+    throw new UserFacingError(
+      "Todavía no se ha buscado el contexto de la tarea. Usa el prompt task_context con este reviewId y registra el resultado con record_task_context; si no hay tarea o el gestor no está disponible, regístralo igual con found: false.",
+    );
+  }
 }
 
 export function requireFiles(session: ReviewSession): ChangedFile[] {

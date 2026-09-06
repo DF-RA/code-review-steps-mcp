@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
+import { DatabaseSync } from "node:sqlite";
 import { describe, test } from "node:test";
 
+import { rmSync } from "node:fs";
+
+import { pathId } from "../../src/changed-files.js";
 import {
+  closeDb,
   findReviewByHead,
+  findReviewFiles,
+  hasReviewFiles,
+  hasTaskContext,
+  saveReviewFiles,
   findReviewById,
   findReviewsOfPr,
   findTaskContext,
@@ -183,5 +192,191 @@ describe("the task context", () => {
 
     assert.equal(findTaskContext("r1")?.code, "PROJ-1");
     assert.equal(findTaskContext("r2"), undefined);
+  });
+});
+
+describe("the files of a review", () => {
+  const files = [
+    { pathId: pathId("src/app.ts"), path: "src/app.ts", status: "modified" as const },
+    { pathId: pathId("src/nuevo.ts"), path: "src/nuevo.ts", status: "added" as const },
+    {
+      pathId: pathId("src/nuevo-nombre.ts"),
+      path: "src/nuevo-nombre.ts",
+      status: "renamed" as const,
+      previousPath: "src/viejo.ts",
+    },
+  ];
+
+  test("gives them back in the order step 3 listed them", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveReviewFiles("r1", files);
+
+    assert.deepEqual(findReviewFiles("r1"), files);
+  });
+
+  test("identifies a file by the md5 of its path", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveReviewFiles("r1", files);
+
+    const back = findReviewFiles("r1") ?? [];
+
+    assert.equal(back[0]?.pathId, pathId("src/app.ts"));
+    assert.match(back[0]?.pathId ?? "", /^[0-9a-f]{32}$/u);
+  });
+
+  test("tells apart step 3 not run from a pull request that touches nothing", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    assert.equal(hasReviewFiles("r1"), false);
+    assert.equal(findReviewFiles("r1"), undefined);
+
+    saveReviewFiles("r1", []);
+
+    assert.equal(hasReviewFiles("r1"), true);
+    assert.deepEqual(findReviewFiles("r1"), []);
+  });
+
+  test("listing again replaces the list instead of adding to it", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveReviewFiles("r1", files);
+    saveReviewFiles("r1", [files[0]!]);
+
+    assert.deepEqual(findReviewFiles("r1")?.map((file) => file.path), ["src/app.ts"]);
+  });
+
+  test("keeps the files of one review out of another", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveReview(stored({ prNumber: 300, headRefOid: "c".repeat(40) }, "r2"));
+
+    saveReviewFiles("r1", files);
+
+    assert.equal(findReviewFiles("r2"), undefined);
+  });
+
+  test("refuses files whose review does not exist", (t) => {
+    useTempDb(t);
+
+    assert.throws(() => saveReviewFiles("no-existe", files), /FOREIGN KEY constraint failed/u);
+  });
+});
+
+describe("hasTaskContext", () => {
+  test("answers whether step 2 was recorded, without loading it", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    assert.equal(hasTaskContext("r1"), false);
+
+    saveTaskContext("r1", { found: false, reason: "sin tarea" });
+
+    assert.equal(hasTaskContext("r1"), true);
+  });
+});
+
+describe("opening a database an older version created", () => {
+  /** The reviews table exactly as it shipped before step 3 existed. */
+  function oldDatabase(file: string): void {
+    const db = new DatabaseSync(file);
+
+    db.exec(`CREATE TABLE reviews (
+      id TEXT PRIMARY KEY, pr_number INTEGER NOT NULL, title TEXT NOT NULL,
+      body TEXT NOT NULL, url TEXT NOT NULL, author TEXT NOT NULL,
+      repo_path TEXT NOT NULL, target_branch TEXT NOT NULL, source_branch TEXT NOT NULL,
+      base_sha TEXT NOT NULL, head_sha TEXT NOT NULL, head_ref_oid TEXT NOT NULL,
+      diff_range TEXT NOT NULL, created_at INTEGER NOT NULL,
+      UNIQUE (repo_path, pr_number, head_ref_oid)
+    )`);
+    db.prepare(
+      `INSERT INTO reviews VALUES ('viejo',1,'t','','','a','/r','m','f','0','1','1','m...f',1)`,
+    ).run();
+    db.close();
+  }
+
+  test("adds the columns it is missing instead of failing on them", (t) => {
+    const file = useTempDb(t);
+
+    closeDb();
+    rmSync(file, { force: true });
+    oldDatabase(file);
+
+    // Any call opens the connection, and opening is what migrates.
+    assert.equal(hasReviewFiles("viejo"), false);
+
+    saveReviewFiles("viejo", []);
+
+    assert.equal(hasReviewFiles("viejo"), true);
+  });
+
+  test("keeps the reviews that were already there", (t) => {
+    const file = useTempDb(t);
+
+    closeDb();
+    rmSync(file, { force: true });
+    oldDatabase(file);
+
+    assert.equal(findReviewById("viejo")?.prNumber, 1);
+  });
+});
+
+describe("ranges stored as branch names", () => {
+  /** A row as it was written before the range moved onto the shas. */
+  function rowWithNameRange(file: string): void {
+    const db = new DatabaseSync(file);
+
+    db.prepare(
+      `INSERT INTO reviews (id, pr_number, title, body, url, author, repo_path,
+         target_branch, source_branch, base_sha, head_sha, head_ref_oid, diff_range, created_at)
+       VALUES ('viejo', 2, 't', '', '', 'a', '/r', 'develop', 'feature/x',
+         'f574b20e', '9675d47a', '9675d47a', 'origin/develop...origin/feature/x', 1)`,
+    ).run();
+    db.close();
+  }
+
+  test("are rebuilt from the frozen shas when the database opens", (t) => {
+    const file = useTempDb(t);
+
+    // Opening once creates the schema, then the row goes in behind its back.
+    saveReview(stored());
+    closeDb();
+    rowWithNameRange(file);
+
+    assert.equal(findReviewById("viejo")?.range, "f574b20e...9675d47a");
+  });
+
+  test("survive being opened again without drifting", (t) => {
+    const file = useTempDb(t);
+
+    saveReview(stored());
+    closeDb();
+    rowWithNameRange(file);
+
+    const once = findReviewById("viejo");
+    closeDb();
+    const twice = findReviewById("viejo");
+
+    assert.equal(once?.range, "f574b20e...9675d47a");
+    assert.deepEqual(twice, once);
+  });
+
+  test("keep the rest of the row untouched", (t) => {
+    const file = useTempDb(t);
+
+    saveReview(stored());
+    closeDb();
+    rowWithNameRange(file);
+
+    const back = findReviewById("viejo");
+
+    assert.equal(back?.prNumber, 2);
+    assert.equal(back?.targetBranch, "develop");
+    assert.equal(back?.sourceBranch, "feature/x");
+    assert.equal(back?.headSha, "9675d47a");
   });
 });

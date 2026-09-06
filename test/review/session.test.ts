@@ -37,7 +37,7 @@ describe("createSession", () => {
     const session = createSession(sessionData({ prNumber: 7 }));
 
     assert.equal(session.prNumber, 7);
-    assert.equal(session.range, "origin/main...origin/feature/rechazo");
+    assert.equal(session.range, `${"a".repeat(40)}...${"b".repeat(40)}`);
   });
 
   test("gives every session its own id", (t) => {

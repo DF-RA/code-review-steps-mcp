@@ -3,6 +3,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
+import type { ChangedFile, ChangeStatus } from "../changed-files.js";
 import { UserFacingError } from "../errors.js";
 import type { TaskContext } from "./task-context.js";
 import type { ReviewSession } from "./session.js";
@@ -37,6 +38,9 @@ CREATE TABLE IF NOT EXISTS reviews (
   head_ref_oid  TEXT    NOT NULL,
   diff_range    TEXT    NOT NULL,
   created_at    INTEGER NOT NULL,
+  -- When step 3 ran. Null and "ran, and the diff was empty" are different
+  -- answers, and no count of rows can tell them apart.
+  files_listed_at INTEGER,
   UNIQUE (repo_path, pr_number, head_ref_oid)
 );
 CREATE INDEX IF NOT EXISTS reviews_by_pr ON reviews (repo_path, pr_number);
@@ -50,7 +54,49 @@ CREATE TABLE IF NOT EXISTS context (
   summary   TEXT,
   url       TEXT
 );
+
+CREATE TABLE IF NOT EXISTS review_file (
+  review_id     TEXT    NOT NULL REFERENCES reviews (id) ON DELETE CASCADE,
+  path_id       TEXT    NOT NULL,
+  path          TEXT    NOT NULL,
+  status        TEXT    NOT NULL,
+  previous_path TEXT,
+  position      INTEGER NOT NULL,
+  PRIMARY KEY (review_id, path_id)
+);
 `;
+
+/**
+ * Adds a column that a database created by an earlier version does not have.
+ *
+ * CREATE TABLE IF NOT EXISTS leaves an existing table exactly as it was, so
+ * every column added after a table has shipped has to come through here or it
+ * only exists for whoever starts from an empty file. SQLite can only add a
+ * column this way if it is nullable or carries a default.
+ *
+ * Table and column names are literals from this file, never input.
+ */
+function ensureColumn(db: DatabaseSync, table: string, column: string, definition: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as unknown as { name: string }[];
+
+  if (!columns.some((existing) => existing.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  }
+}
+
+/** Columns added after their table shipped, in the order they appeared. */
+function migrate(db: DatabaseSync): void {
+  ensureColumn(db, "reviews", "files_listed_at", "INTEGER");
+
+  // Ranges used to be stored as branch names, which point somewhere else after
+  // a fetch. The frozen shas of those same rows say what the review is really
+  // about, so the range is rebuilt from them. The condition makes it a no-op
+  // once a row is already on shas.
+  db.exec(
+    `UPDATE reviews SET diff_range = base_sha || '...' || head_sha
+      WHERE diff_range <> base_sha || '...' || head_sha`,
+  );
+}
 
 let db: DatabaseSync | undefined;
 
@@ -76,6 +122,7 @@ function connect(): DatabaseSync {
   // a context without its review is exactly what the key is there to prevent.
   opened.exec("PRAGMA foreign_keys = ON");
   opened.exec(SCHEMA);
+  migrate(opened);
 
   db = opened;
 
@@ -297,4 +344,87 @@ export function findTaskContext(reviewId: string): TaskContext | undefined {
     summary: text(row.summary),
     url: text(row.url),
   };
+}
+
+/** Whether step 2 was recorded, without loading what it found. */
+export function hasTaskContext(reviewId: string): boolean {
+  return (
+    connect().prepare(`SELECT 1 FROM context WHERE review_id = ?`).get(reviewId) !== undefined
+  );
+}
+
+interface FileRow {
+  path_id: string;
+  path: string;
+  status: string;
+  previous_path: string | null;
+}
+
+/**
+ * Stores the files of a review, replacing whatever was there.
+ *
+ * Listing them again is redoing step 3, not adding to it, so the old rows go:
+ * a file that is no longer in the diff must not stay behind as reviewable. The
+ * position column keeps the order git gave them, which is the order the review
+ * follows.
+ */
+export function saveReviewFiles(reviewId: string, files: ChangedFile[]): void {
+  const db = connect();
+
+  db.exec("BEGIN");
+
+  try {
+    db.prepare(`DELETE FROM review_file WHERE review_id = ?`).run(reviewId);
+    db.prepare(`UPDATE reviews SET files_listed_at = ? WHERE id = ?`).run(Date.now(), reviewId);
+
+    const insert = db.prepare(
+      `INSERT INTO review_file (review_id, path_id, path, status, previous_path, position)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+
+    files.forEach((file, position) => {
+      insert.run(reviewId, file.pathId, file.path, file.status, file.previousPath ?? null, position);
+    });
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+
+    throw error;
+  }
+}
+
+/** Whether step 3 ran, whatever it found. */
+export function hasReviewFiles(reviewId: string): boolean {
+  const row = connect()
+    .prepare(`SELECT files_listed_at FROM reviews WHERE id = ?`)
+    .get(reviewId) as unknown as { files_listed_at: number | null } | undefined;
+
+  return row?.files_listed_at != null;
+}
+
+/**
+ * The files of a review in the order step 3 listed them, or undefined when it
+ * has not run. An empty list is an answer: a pull request that touches nothing.
+ */
+export function findReviewFiles(reviewId: string): ChangedFile[] | undefined {
+  if (!hasReviewFiles(reviewId)) {
+    return undefined;
+  }
+
+  const rows = connect()
+    .prepare(
+      `SELECT path_id, path, status, previous_path
+         FROM review_file WHERE review_id = ? ORDER BY position`,
+    )
+    .all(reviewId) as unknown as FileRow[];
+
+  // The key is left out when there is no rename, so what comes back out equals
+  // what listChangedFiles produced going in.
+  return rows.map((row) => ({
+    pathId: row.path_id,
+    path: row.path,
+    status: row.status as ChangeStatus,
+    ...(row.previous_path ? { previousPath: row.previous_path } : {}),
+  }));
 }
