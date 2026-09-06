@@ -3,7 +3,8 @@ import { z } from "zod";
 
 import { SEVERITIES, type Finding } from "../analysis/types.js";
 import { UserFacingError } from "../errors.js";
-import { fileDiff, type FileDiff } from "../file-diff.js";
+import { countHunks, partOf, rawFileDiff, type FileDiff } from "../file-diff.js";
+import { findFileDiff, saveFileDiff } from "../review/db.js";
 import { requireAnalysis, requireFiles, requireSession } from "../review/session.js";
 
 const inputSchema = {
@@ -22,6 +23,7 @@ const inputSchema = {
 const outputSchema = {
   reviewId: z.string(),
   path: z.string(),
+  pathId: z.string(),
   diff: z.string(),
   offset: z.number(),
   hunksIncluded: z.number(),
@@ -86,7 +88,7 @@ export function registerGetFileDiff(server: McpServer): void {
   server.registerTool(
     "get_file_diff",
     {
-      title: "Ver el diff de un archivo",
+      title: "[Step 5] Ver el diff de un archivo",
       description:
         "Quinto paso, uno por archivo. Devuelve el diff de un archivo del pull request junto con los problemas que analyze_pr detectó en él, para revisarlo con todo delante. Los diffs largos llegan por partes cortadas entre bloques de cambio. Lo que las herramientas no cubren —diseño, lógica de negocio, si los tests prueban lo que dicen— es lo que tienes que valorar tú a partir del diff. Requiere el reviewId y haber llamado a get_pr_files y analyze_pr.",
       inputSchema,
@@ -113,7 +115,17 @@ export function registerGetFileDiff(server: McpServer): void {
           );
         }
 
-        const part = await fileDiff(session.repoPath, session.range, cleanPath, offset ?? 0);
+        // The whole diff is stored the first time and cut from there after.
+        // Over frozen commits git would only reprint the same text, and asking
+        // for a later part of a long file is exactly when it is asked again.
+        const stored = findFileDiff(session.id, known.pathId);
+        const whole = stored?.diff ?? (await rawFileDiff(session.repoPath, session.range, cleanPath));
+
+        if (!stored) {
+          saveFileDiff(session.id, known.pathId, whole, countHunks(whole));
+        }
+
+        const part = partOf(whole, cleanPath, offset ?? 0);
         const findings = analysis.findingsByFile.get(cleanPath) ?? [];
         const analyzed = !analysis.unanalyzed.includes(cleanPath) && analysis.tools.length > 0;
 
@@ -124,6 +136,7 @@ export function registerGetFileDiff(server: McpServer): void {
           structuredContent: {
             reviewId: session.id,
             path: part.path,
+            pathId: known.pathId,
             diff: part.diff,
             offset: part.offset,
             hunksIncluded: part.hunksIncluded,

@@ -8,12 +8,15 @@ import type { Finding } from "../../src/analysis/types.js";
 import {
   closeDb,
   findAnalysis,
+  findFetchedPathIds,
+  findFileDiff,
   findReviewByHead,
   findReviewFiles,
   hasReviewFiles,
   hasTaskContext,
   resetReviewSteps,
   saveAnalysis,
+  saveFileDiff,
   saveReviewFiles,
   findReviewById,
   findReviewsOfPr,
@@ -532,5 +535,77 @@ describe("the analysis of a review", () => {
     resetReviewSteps("r1");
 
     assert.equal(findAnalysis("r1"), undefined);
+  });
+});
+
+describe("the diff of a file", () => {
+  const APP = pathId("src/app.ts");
+  const OTRO = pathId("src/otro.ts");
+
+  function reviewWithFiles(): void {
+    saveReview(stored());
+    saveReviewFiles("r1", [
+      { pathId: APP, path: "src/app.ts", status: "modified" },
+      { pathId: OTRO, path: "src/otro.ts", status: "added" },
+    ]);
+  }
+
+  test("gives back the whole diff, not the part that was asked for", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    saveFileDiff("r1", APP, "diff --git a/x b/x\n@@ -1 +1 @@\n-a\n+b\n", 1);
+
+    assert.equal(findFileDiff("r1", APP)?.diff.includes("@@ -1 +1 @@"), true);
+    assert.equal(findFileDiff("r1", APP)?.totalHunks, 1);
+  });
+
+  test("does not answer for a file nobody fetched", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    assert.equal(findFileDiff("r1", OTRO), undefined);
+  });
+
+  test("refuses a diff of a file the review does not list", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    assert.throws(
+      () => saveFileDiff("r1", pathId("src/fantasma.ts"), "diff", 1),
+      /FOREIGN KEY constraint failed/u,
+    );
+  });
+
+  test("says which files have been walked, in the listing order", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    // Fetched out of order on purpose: the answer follows the review, not this.
+    saveFileDiff("r1", OTRO, "d2", 1);
+    saveFileDiff("r1", APP, "d1", 1);
+
+    assert.deepEqual(findFetchedPathIds("r1"), [APP, OTRO]);
+  });
+
+  test("goes with the files when the list is replaced", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+    saveFileDiff("r1", APP, "d1", 1);
+
+    // Relisting drops the rows, and the diffs hang off them.
+    saveReviewFiles("r1", [{ pathId: OTRO, path: "src/otro.ts", status: "added" }]);
+
+    assert.equal(findFileDiff("r1", APP), undefined);
+  });
+
+  test("goes away when the review is restarted", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+    saveFileDiff("r1", APP, "d1", 1);
+
+    resetReviewSteps("r1");
+
+    assert.equal(findFileDiff("r1", APP), undefined);
   });
 });

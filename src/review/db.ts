@@ -80,6 +80,18 @@ CREATE TABLE IF NOT EXISTS analyze_pr (
   findings    TEXT    NOT NULL,
   analyzed_at INTEGER NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS file_diff (
+  review_id   TEXT    NOT NULL,
+  path_id     TEXT    NOT NULL,
+  -- The whole diff of the file, not the part that was asked for: the parts are
+  -- cuts of this text, so keeping it whole serves any offset later.
+  diff        TEXT    NOT NULL,
+  total_hunks INTEGER NOT NULL,
+  fetched_at  INTEGER NOT NULL,
+  PRIMARY KEY (review_id, path_id),
+  FOREIGN KEY (review_id, path_id) REFERENCES review_file (review_id, path_id) ON DELETE CASCADE
+);
 `;
 
 /**
@@ -538,4 +550,54 @@ export function findAnalysis(reviewId: string): StoredAnalysis | undefined {
     unanalyzed: JSON.parse(row.unanalyzed) as string[],
     findingsByFile,
   };
+}
+
+export interface StoredFileDiff {
+  diff: string;
+  totalHunks: number;
+}
+
+/**
+ * Stores the diff of one file of a review.
+ *
+ * Hangs off review_file rather than off the review: a diff is of a file that
+ * this review listed, and the foreign key says so. Relisting the files takes
+ * the diffs with it, because a diff of a file no longer in the review is not
+ * something to keep.
+ */
+export function saveFileDiff(reviewId: string, pathId: string, diff: string, totalHunks: number): void {
+  connect()
+    .prepare(
+      `INSERT INTO file_diff (review_id, path_id, diff, total_hunks, fetched_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT (review_id, path_id) DO UPDATE SET
+         diff = excluded.diff,
+         total_hunks = excluded.total_hunks,
+         fetched_at = excluded.fetched_at`,
+    )
+    .run(reviewId, pathId, diff, totalHunks, Date.now());
+}
+
+/** The stored diff of a file, or undefined when nobody has asked for it yet. */
+export function findFileDiff(reviewId: string, pathId: string): StoredFileDiff | undefined {
+  const row = connect()
+    .prepare(`SELECT diff, total_hunks FROM file_diff WHERE review_id = ? AND path_id = ?`)
+    .get(reviewId, pathId) as unknown as { diff: string; total_hunks: number } | undefined;
+
+  return row ? { diff: row.diff, totalHunks: row.total_hunks } : undefined;
+}
+
+/** Which files of a review have had their diff fetched, in the listing order. */
+export function findFetchedPathIds(reviewId: string): string[] {
+  const rows = connect()
+    .prepare(
+      `SELECT d.path_id AS path_id
+         FROM file_diff d
+         JOIN review_file f ON f.review_id = d.review_id AND f.path_id = d.path_id
+        WHERE d.review_id = ?
+        ORDER BY f.position`,
+    )
+    .all(reviewId) as unknown as { path_id: string }[];
+
+  return rows.map((row) => row.path_id);
 }
