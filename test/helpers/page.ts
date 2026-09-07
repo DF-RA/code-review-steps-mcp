@@ -1,6 +1,7 @@
 import type { Draft, DraftComment } from "../../src/draft/draft.js";
 import { renderPage } from "../../src/draft/page.js";
 import { draftUrl, ensureServer } from "../../src/draft/server.js";
+import { saveDraft } from "../../src/review/db.js";
 import { createSession, type ReviewSession } from "../../src/review/session.js";
 import { createDocument, type StubDocument, type StubElement } from "./dom.js";
 import { sessionData } from "./session.js";
@@ -53,6 +54,10 @@ export async function openPage(draft: Draft): Promise<PageHarness> {
   const session = createSession(sessionData());
 
   session.draft = draft;
+
+  // Stored as create_draft would leave it, so what the page writes lands on a
+  // row that exists and the test sees the real path.
+  saveDraft(session.id, draft);
 
   const { document, byId } = createDocument(["list", "summary", "confirmed", "confirm"]);
   const url = draftUrl(base, session.id);

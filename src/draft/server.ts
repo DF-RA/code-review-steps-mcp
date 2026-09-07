@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 
 import { DRAFT_STATUSES, type DraftStatus } from "./draft.js";
 import { renderPage } from "./page.js";
+import { saveDraftComment, saveDraftConfirmed } from "../review/db.js";
 import { requireSession, type ReviewSession } from "../review/session.js";
 
 /**
@@ -129,6 +130,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       comment.edited = true;
     }
 
+    // The page is a second writer of the review: what somebody marks here has
+    // to outlive this process, the same as what the tools record.
+    saveDraftComment(session.id, comment);
+
     send(response, 200, "application/json; charset=utf-8", JSON.stringify(comment));
     return;
   }
@@ -136,6 +141,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   if (request.method === "POST" && parts[2] === "confirm") {
     const payload = (await readJson(request)) as { confirmed?: boolean };
     draft.confirmed = payload.confirmed !== false;
+
+    saveDraftConfirmed(session.id, draft.confirmed);
 
     send(response, 200, "application/json; charset=utf-8", JSON.stringify({ confirmed: draft.confirmed }));
     return;

@@ -8,6 +8,7 @@ import type { Finding } from "../../src/analysis/types.js";
 import {
   closeDb,
   findAnalysis,
+  findDraft,
   findFetchedPathIds,
   findFileReview,
   findFileReviews,
@@ -18,6 +19,9 @@ import {
   hasTaskContext,
   resetReviewSteps,
   saveAnalysis,
+  saveDraft,
+  saveDraftComment,
+  saveDraftConfirmed,
   saveFileDiff,
   saveFileReview,
   saveReviewFiles,
@@ -735,5 +739,120 @@ describe("the review of a file", () => {
     resetReviewSteps("r1");
 
     assert.equal(findFileReviews("r1"), undefined);
+  });
+});
+
+describe("the draft", () => {
+  const comment = {
+    id: "abc123def456",
+    scope: "line" as const,
+    severity: "issue" as const,
+    path: "src/app.ts",
+    line: 12,
+    title: "El error se traga",
+    body: "El catch vacío oculta el fallo.",
+    status: "pending" as const,
+    edited: false,
+  };
+
+  const draft = { comments: [comment], confirmed: false, createdAt: 1_700_000_000_000 };
+
+  test("gives back what step 7 built", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveDraft("r1", draft);
+
+    assert.deepEqual(findDraft("r1"), draft);
+  });
+
+  test("does not answer before step 7 has run", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    assert.equal(findDraft("r1"), undefined);
+  });
+
+  test("keeps a pr-scoped comment without a path", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveDraft("r1", {
+      ...draft,
+      comments: [
+        {
+          id: "pr01",
+          scope: "pr" as const,
+          severity: "blocker" as const,
+          title: "Pipeline en rojo",
+          body: "Falla el build.",
+          status: "pending" as const,
+          edited: false,
+        },
+      ],
+    });
+
+    assert.equal(findDraft("r1")?.comments[0]?.path, undefined);
+  });
+
+  test("keeps what somebody marked in the page", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveDraft("r1", draft);
+
+    saveDraftComment("r1", { ...comment, status: "valid" });
+
+    assert.equal(findDraft("r1")?.comments[0]?.status, "valid");
+  });
+
+  test("keeps a body edited in the page, and that it was edited", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveDraft("r1", draft);
+
+    saveDraftComment("r1", { ...comment, body: "Reescrito a mano.", edited: true });
+
+    const back = findDraft("r1")?.comments[0];
+
+    assert.equal(back?.body, "Reescrito a mano.");
+    assert.equal(back?.edited, true);
+  });
+
+  test("keeps the confirmation", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveDraft("r1", draft);
+
+    assert.equal(findDraft("r1")?.confirmed, false);
+
+    saveDraftConfirmed("r1", true);
+
+    assert.equal(findDraft("r1")?.confirmed, true);
+  });
+
+  test("redrafting replaces the comments instead of adding to them", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    saveDraft("r1", { ...draft, comments: [comment, { ...comment, id: "otro" }] });
+    saveDraft("r1", draft);
+
+    assert.equal(findDraft("r1")?.comments.length, 1);
+  });
+
+  test("refuses a draft whose review does not exist", (t) => {
+    useTempDb(t);
+
+    assert.throws(() => saveDraft("no-existe", draft), /FOREIGN KEY constraint failed/u);
+  });
+
+  test("goes away when the review is restarted", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    saveDraft("r1", draft);
+
+    resetReviewSteps("r1");
+
+    assert.equal(findDraft("r1"), undefined);
   });
 });

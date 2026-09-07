@@ -61,12 +61,27 @@ describe("createSession", () => {
 });
 
 describe("requireSession", () => {
-  test("returns the session that was created", (t) => {
+  test("returns the review that was created", (t) => {
     useTempDb(t);
 
     const session = createSession(sessionData());
+    const back = requireSession(session.id);
 
-    assert.equal(requireSession(session.id), session);
+    assert.equal(back.id, session.id);
+    assert.equal(back.prNumber, session.prNumber);
+    assert.equal(back.range, session.range);
+  });
+
+  test("builds a fresh view each time instead of sharing one object", (t) => {
+    useTempDb(t);
+
+    const session = createSession(sessionData());
+    const first = requireSession(session.id);
+
+    first.title = "cambiado a mano";
+
+    // Without a cache, touching what one call returned cannot reach the next.
+    assert.equal(requireSession(session.id).title, session.title);
   });
 
   test("tolerates an id the client padded with whitespace", (t) => {
@@ -74,7 +89,7 @@ describe("requireSession", () => {
 
     const session = createSession(sessionData());
 
-    assert.equal(requireSession(`  ${session.id}\n`), session);
+    assert.equal(requireSession(`  ${session.id}\n`).id, session.id);
   });
 
   test("says how to start over when the id is unknown", (t) => {
@@ -96,7 +111,7 @@ describe("adoptSession", () => {
     const restored = { ...sessionData(), id: "imported-1", createdAt: Date.now() };
 
     assert.equal(adoptSession(restored), restored);
-    assert.equal(requireSession("imported-1"), restored);
+    assert.equal(requireSession("imported-1").prNumber, restored.prNumber);
   });
 
   test("replaces a session already held under that id", (t) => {
@@ -112,77 +127,43 @@ describe("adoptSession", () => {
   });
 });
 
-describe("the session cache", () => {
-  test("a session left unused for four hours leaves the cache but not the review", (t) => {
+describe("without a cache", () => {
+  test("a review does not expire, however long it sits", (t) => {
     useTempDb(t);
     t.mock.timers.enable({ apis: ["Date"], now: 0 });
 
-    const old = createSession(sessionData({ files: [] }));
+    const session = createSession(sessionData());
 
-    t.mock.timers.tick(FOUR_HOURS_MS + 1);
+    // Step 7 tells the agent to stop and wait for a person, for as long as it
+    // takes. Nothing may throw the review away in the meantime.
+    t.mock.timers.tick(FOUR_HOURS_MS * 100);
 
-    // Pruning happens when a session is stored, not when one is read.
-    createSession(otherReview(2));
-
-    const back = requireSession(old.id);
-
-    // The review survives in the database; what the later steps had does not.
-    assert.equal(back.prNumber, old.prNumber);
-    assert.equal(back.files, undefined);
+    assert.equal(requireSession(session.id).id, session.id);
   });
 
-  test("reading a session keeps it: idle time counts, not age", (t) => {
+  test("opening more reviews does not push the older ones out", (t) => {
     useTempDb(t);
-    t.mock.timers.enable({ apis: ["Date"], now: 0 });
 
-    const waiting = createSession(sessionData({ files: [] }));
+    const first = createSession(otherReview(1000));
 
-    // Someone reads the draft for hours: the review is in use, not abandoned.
-    for (let hour = 0; hour < 6; hour += 1) {
-      t.mock.timers.tick(FOUR_HOURS_MS / 2);
-      requireSession(waiting.id);
+    for (let n = 0; n < 40; n += 1) {
+      createSession(otherReview(n));
     }
 
-    createSession(otherReview(2));
-
-    assert.equal(requireSession(waiting.id), waiting);
+    assert.equal(requireSession(first.id).id, first.id);
   });
 
-  test("brings step 2 back when it rebuilds a session from the database", (t) => {
+  test("brings back what the steps recorded, not only the review", (t) => {
     useTempDb(t);
 
     const session = createSession(sessionData());
 
     saveTaskContext(session.id, { found: true, code: "PROJ-1234", summary: "Lo que pide." });
 
-    // Evicting it is what a restart looks like from in here.
-    for (let n = 0; n < 20; n += 1) {
-      createSession(otherReview(n));
-    }
-
     const back = requireSession(session.id);
 
-    assert.notEqual(back, session);
     assert.equal(back.taskContext?.code, "PROJ-1234");
     assert.equal(back.taskContext?.summary, "Lo que pide.");
-  });
-
-  test("evicts the least recently used once it is full, and rebuilds it from the row", (t) => {
-    useTempDb(t);
-
-    const first = createSession(otherReview(1000));
-
-    // Twice the capacity, so it does not matter how full the cache already was
-    // when this test started: nothing older than these survives.
-    for (let n = 0; n < 40; n += 1) {
-      createSession(otherReview(n));
-    }
-
-    const back = requireSession(first.id);
-
-    assert.notEqual(back, first);
-    assert.equal(back.prNumber, first.prNumber);
-    assert.equal(back.headRefOid, first.headRefOid);
   });
 });
 

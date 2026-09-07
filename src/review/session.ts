@@ -9,13 +9,18 @@ import type { TaskContext } from "./task-context.js";
 import { UserFacingError } from "../errors.js";
 import {
   findAnalysis,
+  findDraft,
   findFileReviews,
   findReviewById,
   findReviewFiles,
   findTaskContext,
   hasTaskContext,
   resetReviewSteps,
+  saveAnalysis,
+  saveDraft,
+  saveFileReview,
   saveReview,
+  saveReviewFiles,
   saveTaskContext,
 } from "./db.js";
 
@@ -74,81 +79,60 @@ export interface ReviewSession {
 }
 
 /**
- * What step 1 produced lives in SQLite; this map only caches the sessions in
- * flight, because the later steps still hold their state in memory. Dropping an
- * entry therefore costs the work of those steps, never the review itself: the
- * next lookup rebuilds it from the row.
+ * Every step reads the review back from SQLite.
+ *
+ * There is no cache: the rows are the review, and a session object is a view of
+ * them built for one call. Two callers therefore cannot disagree about what a
+ * review holds, and nothing is lost when this process ends — which is what the
+ * page of the draft depends on, since it is written by a browser and read by a
+ * tool that may run much later.
  */
-const IDLE_MS = 4 * 60 * 60 * 1000;
-const MAX_SESSIONS = 20;
-
-const sessions = new Map<string, ReviewSession>();
-const lastUsed = new Map<string, number>();
-
-function touch(id: string): void {
-  lastUsed.set(id, Date.now());
-}
-
-function forget(id: string): void {
-  sessions.delete(id);
-  lastUsed.delete(id);
-}
-
-/**
- * Evicts by time since last use, not since creation: a review sitting at step 7
- * while someone reads the draft is being used, and must not be dropped for
- * having started long ago.
- */
-function prune(): void {
-  const now = Date.now();
-
-  for (const id of [...sessions.keys()]) {
-    if (now - (lastUsed.get(id) ?? 0) > IDLE_MS) {
-      forget(id);
-    }
-  }
-
-  while (sessions.size >= MAX_SESSIONS) {
-    const coldest = [...lastUsed.entries()].sort((a, b) => a[1] - b[1])[0];
-
-    if (!coldest) {
-      break;
-    }
-    forget(coldest[0]);
-  }
-}
-
-function remember(session: ReviewSession): ReviewSession {
-  prune();
-  sessions.set(session.id, session);
-  touch(session.id);
+function persist(session: ReviewSession): ReviewSession {
   saveReview(session);
 
-  // A session restored from a file brings step 2 with it; the row has to exist
-  // before the context that points at it.
+  // A session restored from a file brings the later steps with it, and each row
+  // points at the one before, so they go in the order the keys require.
   if (session.taskContext) {
     saveTaskContext(session.id, session.taskContext);
+  }
+
+  if (session.files) {
+    saveReviewFiles(session.id, session.files);
+  }
+
+  if (session.analysis) {
+    saveAnalysis(session.id, session.analysis);
+  }
+
+  if (session.reviews) {
+    const byPath = new Map(session.files?.map((file) => [file.path, file.pathId]));
+
+    for (const [path, comments] of session.reviews) {
+      const pathId = byPath.get(path);
+
+      if (pathId) {
+        saveFileReview(session.id, pathId, comments);
+      }
+    }
+  }
+
+  if (session.draft) {
+    saveDraft(session.id, session.draft);
   }
 
   return session;
 }
 
 export function createSession(data: Omit<ReviewSession, "id" | "createdAt">): ReviewSession {
-  return remember({ ...data, id: randomUUID(), createdAt: Date.now() });
+  return persist({ ...data, id: randomUUID(), createdAt: Date.now() });
 }
 
 /** Puts a session restored from a file back into play, under its own id. */
 export function adoptSession(session: ReviewSession): ReviewSession {
-  return remember(session);
+  return persist(session);
 }
 
-/**
- * Puts a review back to just after step 1, on disk and in memory.
- *
- * Clearing only the rows would leave a live session still holding what the
- * steps produced, and this process would go on serving it as if nothing had
- * happened.
- */
+/** Puts a review back to just after step 1. */
 export function restartSteps(session: ReviewSession): void {
   resetReviewSteps(session.id);
 
@@ -160,17 +144,9 @@ export function restartSteps(session: ReviewSession): void {
   session.fixes = undefined;
 }
 
-/** Every step starts here, so a missing session says what to do. */
+/** Every step starts here, so a missing review says what to do. */
 export function requireSession(reviewId: string): ReviewSession {
   const id = reviewId.trim();
-  const cached = sessions.get(id);
-
-  if (cached) {
-    touch(id);
-
-    return cached;
-  }
-
   const stored = findReviewById(id);
 
   if (!stored) {
@@ -179,21 +155,14 @@ export function requireSession(reviewId: string): ReviewSession {
     );
   }
 
-  // Rebuilt from the rows: the steps that already persist come back with it,
-  // the ones still living in memory do not.
-  const session: ReviewSession = {
+  return {
     ...stored,
-    taskContext: findTaskContext(stored.id),
-    files: findReviewFiles(stored.id),
-    analysis: findAnalysis(stored.id),
-    reviews: findFileReviews(stored.id),
+    taskContext: findTaskContext(id),
+    files: findReviewFiles(id),
+    analysis: findAnalysis(id),
+    reviews: findFileReviews(id),
+    draft: findDraft(id),
   };
-
-  prune();
-  sessions.set(session.id, session);
-  touch(session.id);
-
-  return session;
 }
 
 export function requireTaskContext(session: ReviewSession): TaskContext {

@@ -6,6 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Finding } from "../analysis/types.js";
 import type { ChangedFile, ChangeStatus } from "../changed-files.js";
 import type { CommentScope, CommentSeverity, ReviewComment } from "./comments.js";
+import type { Draft, DraftComment, DraftStatus } from "../draft/draft.js";
 import { UserFacingError } from "../errors.js";
 import type { TaskContext } from "./task-context.js";
 import type { ReviewSession } from "./session.js";
@@ -109,6 +110,32 @@ CREATE TABLE IF NOT EXISTS review_comment (
   -- Points at the review of the file, not at the file: a comment exists because
   -- somebody reviewed it, so it cannot outlive that review.
   FOREIGN KEY (review_id, path_id) REFERENCES review_file (review_id, path_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS draft (
+  review_id  TEXT    PRIMARY KEY REFERENCES reviews (id) ON DELETE CASCADE,
+  confirmed  INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS draft_comment (
+  review_id TEXT    NOT NULL REFERENCES draft (review_id) ON DELETE CASCADE,
+  -- The hash create_draft derives, stable across redrafts so a decision already
+  -- taken survives the next one.
+  id        TEXT    NOT NULL,
+  position  INTEGER NOT NULL,
+  scope     TEXT    NOT NULL,
+  path      TEXT,
+  line      INTEGER,
+  end_line  INTEGER,
+  severity  TEXT    NOT NULL,
+  title     TEXT    NOT NULL,
+  -- Editable from the page, so this is the text that would be published and not
+  -- necessarily the one step 6 concluded.
+  body      TEXT    NOT NULL,
+  status    TEXT    NOT NULL,
+  edited    INTEGER NOT NULL,
+  PRIMARY KEY (review_id, id)
 );
 
 CREATE TABLE IF NOT EXISTS file_diff (
@@ -526,6 +553,7 @@ export function resetReviewSteps(reviewId: string): void {
   db.exec("BEGIN");
 
   try {
+    db.prepare(`DELETE FROM draft WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM analyze_pr WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM changed_file WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM context WHERE review_id = ?`).run(reviewId);
@@ -790,4 +818,131 @@ export function findFileReviews(reviewId: string): Map<string, ReviewComment[]> 
   }
 
   return byPath;
+}
+
+interface DraftRow {
+  confirmed: number;
+  created_at: number;
+}
+
+interface DraftCommentRow {
+  id: string;
+  scope: string;
+  path: string | null;
+  line: number | null;
+  end_line: number | null;
+  severity: string;
+  title: string;
+  body: string;
+  status: string;
+  edited: number;
+}
+
+/**
+ * Stores the draft, replacing the previous one.
+ *
+ * create_draft rebuilds the list from the recorded reviews on every call and
+ * carries the decisions over itself, so what arrives here is already the whole
+ * truth: the old rows go rather than being merged with.
+ */
+export function saveDraft(reviewId: string, draft: Draft): void {
+  const db = connect();
+
+  db.exec("BEGIN");
+
+  try {
+    db.prepare(`DELETE FROM draft_comment WHERE review_id = ?`).run(reviewId);
+    db.prepare(
+      `INSERT INTO draft (review_id, confirmed, created_at) VALUES (?, ?, ?)
+       ON CONFLICT (review_id) DO UPDATE SET
+         confirmed = excluded.confirmed,
+         created_at = excluded.created_at`,
+    ).run(reviewId, draft.confirmed ? 1 : 0, draft.createdAt);
+
+    const insert = db.prepare(
+      `INSERT INTO draft_comment
+         (review_id, id, position, scope, path, line, end_line, severity, title, body, status, edited)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    draft.comments.forEach((comment, position) => {
+      insert.run(
+        reviewId,
+        comment.id,
+        position,
+        comment.scope,
+        comment.path ?? null,
+        comment.line ?? null,
+        comment.endLine ?? null,
+        comment.severity,
+        comment.title,
+        comment.body,
+        comment.status,
+        comment.edited ? 1 : 0,
+      );
+    });
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+
+    throw error;
+  }
+}
+
+/** The draft of a review, or undefined when step 7 has not run. */
+export function findDraft(reviewId: string): Draft | undefined {
+  const head = connect()
+    .prepare(`SELECT confirmed, created_at FROM draft WHERE review_id = ?`)
+    .get(reviewId) as unknown as DraftRow | undefined;
+
+  if (!head) {
+    return undefined;
+  }
+
+  const rows = connect()
+    .prepare(
+      `SELECT id, scope, path, line, end_line, severity, title, body, status, edited
+         FROM draft_comment WHERE review_id = ? ORDER BY position`,
+    )
+    .all(reviewId) as unknown as DraftCommentRow[];
+
+  return {
+    confirmed: head.confirmed === 1,
+    createdAt: head.created_at,
+    comments: rows.map((row) => ({
+      id: row.id,
+      scope: row.scope as CommentScope,
+      severity: row.severity as CommentSeverity,
+      ...(row.path === null ? {} : { path: row.path }),
+      ...(row.line === null ? {} : { line: row.line }),
+      ...(row.end_line === null ? {} : { endLine: row.end_line }),
+      title: row.title,
+      body: row.body,
+      status: row.status as DraftStatus,
+      edited: row.edited === 1,
+    })),
+  };
+}
+
+/**
+ * Writes back what somebody decided about one comment in the page.
+ *
+ * The page is the only thing that changes a draft after it is made, and it does
+ * so one comment at a time, so this writes one row rather than the whole draft.
+ */
+export function saveDraftComment(reviewId: string, comment: DraftComment): void {
+  connect()
+    .prepare(
+      `UPDATE draft_comment SET body = ?, status = ?, edited = ?
+        WHERE review_id = ? AND id = ?`,
+    )
+    .run(comment.body, comment.status, comment.edited ? 1 : 0, reviewId, comment.id);
+}
+
+/** Records that the person is done reviewing the draft, or is not. */
+export function saveDraftConfirmed(reviewId: string, confirmed: boolean): void {
+  connect()
+    .prepare(`UPDATE draft SET confirmed = ? WHERE review_id = ?`)
+    .run(confirmed ? 1 : 0, reviewId);
 }
