@@ -278,7 +278,7 @@ consume lo que produjo el anterior.
 3. get_pr_files(reviewId)          → archivos del PR
 4. analyze_pr(reviewId)            → problemas detectados por las herramientas
 5. get_file_diff(reviewId, pathId) → diff + los problemas de ese archivo
-6. review_file(reviewId, path)     → el agente analiza y registra sus comentarios
+6. review_file(reviewId, pathId)   → el agente analiza y registra sus comentarios
    (5 y 6, uno por archivo)
 7. create_draft(reviewId)          → borrador en una página local, para revisarlo
 8. get_draft_status(reviewId)      → qué decidió la persona sobre cada comentario
@@ -436,7 +436,7 @@ Es lo que necesitas para revisar ese archivo, en una sola respuesta.
 - Lo que las herramientas no cubren —diseño, lógica de negocio, si los tests
   prueban lo que dicen— es lo que valora el agente a partir del diff.
 
-### 6. `review_file(reviewId, path)` — prompt
+### 6. `review_file(reviewId, pathId)` — prompt
 
 Aquí entra el juicio, que es lo que ninguna herramienta cubre. Es un **prompt**,
 no una tool: construye la revisión de un archivo con todo el contexto dentro.

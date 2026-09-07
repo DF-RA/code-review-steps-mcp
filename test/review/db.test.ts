@@ -9,6 +9,8 @@ import {
   closeDb,
   findAnalysis,
   findFetchedPathIds,
+  findFileReview,
+  findFileReviews,
   findFileDiff,
   findReviewByHead,
   findReviewFiles,
@@ -17,6 +19,7 @@ import {
   resetReviewSteps,
   saveAnalysis,
   saveFileDiff,
+  saveFileReview,
   saveReviewFiles,
   findReviewById,
   findReviewsOfPr,
@@ -607,5 +610,130 @@ describe("the diff of a file", () => {
     resetReviewSteps("r1");
 
     assert.equal(findFileDiff("r1", APP), undefined);
+  });
+});
+
+describe("the review of a file", () => {
+  const APP = pathId("src/app.ts");
+  const OTRO = pathId("src/otro.ts");
+
+  const comment = {
+    scope: "line" as const,
+    path: "src/app.ts",
+    line: 12,
+    severity: "issue" as const,
+    title: "El error se traga",
+    body: "El catch vacío oculta el fallo.",
+    raisedBy: "programador",
+  };
+
+  function reviewWithFiles(): void {
+    saveReview(stored());
+    saveReviewFiles("r1", [
+      { pathId: APP, path: "src/app.ts", status: "modified" },
+      { pathId: OTRO, path: "src/otro.ts", status: "added" },
+    ]);
+  }
+
+  test("gives back the comments in the order they were concluded", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    const second = { ...comment, line: 40, title: "Nombre que engaña" };
+    saveFileReview("r1", APP, [comment, second]);
+
+    assert.deepEqual(findFileReview("r1", APP), [comment, second]);
+  });
+
+  test("tells apart reviewed with nothing to say from not reviewed", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    assert.equal(findFileReview("r1", APP), undefined);
+
+    saveFileReview("r1", APP, []);
+
+    // A row in review_file and none in review_comment: looked at, nothing said.
+    assert.deepEqual(findFileReview("r1", APP), []);
+  });
+
+  test("keeps a pr-scoped comment without a path, and a line one with it", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    saveFileReview("r1", APP, [
+      comment,
+      { scope: "pr", severity: "blocker", title: "Pipeline en rojo", body: "Falla el build." },
+    ]);
+
+    const back = findFileReview("r1", APP) ?? [];
+
+    assert.equal(back[0]?.path, "src/app.ts");
+    assert.equal(back[1]?.path, undefined);
+  });
+
+  test("recording it again replaces the comments instead of adding to them", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    saveFileReview("r1", APP, [comment, { ...comment, line: 40, title: "Otro" }]);
+    saveFileReview("r1", APP, [{ ...comment, title: "El de la segunda vuelta" }]);
+
+    const back = findFileReview("r1", APP) ?? [];
+
+    assert.equal(back.length, 1);
+    assert.equal(back[0]?.title, "El de la segunda vuelta");
+  });
+
+  test("refuses the review of a file the pull request does not touch", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    assert.throws(
+      () => saveFileReview("r1", pathId("src/fantasma.ts"), [comment]),
+      /FOREIGN KEY constraint failed/u,
+    );
+  });
+
+  test("lists every reviewed file in the listing order, empty ones included", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    // Recorded out of order on purpose: the answer follows the review.
+    saveFileReview("r1", OTRO, []);
+    saveFileReview("r1", APP, [comment]);
+
+    const all = findFileReviews("r1");
+
+    assert.deepEqual([...(all?.keys() ?? [])], ["src/app.ts", "src/otro.ts"]);
+    assert.equal(all?.get("src/otro.ts")?.length, 0);
+    assert.equal(all?.get("src/app.ts")?.length, 1);
+  });
+
+  test("says nothing has been reviewed instead of an empty map", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+
+    assert.equal(findFileReviews("r1"), undefined);
+  });
+
+  test("goes with the files when the list is replaced", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+    saveFileReview("r1", APP, [comment]);
+
+    saveReviewFiles("r1", [{ pathId: OTRO, path: "src/otro.ts", status: "added" }]);
+
+    assert.equal(findFileReview("r1", APP), undefined);
+  });
+
+  test("goes away when the review is restarted", (t) => {
+    useTempDb(t);
+    reviewWithFiles();
+    saveFileReview("r1", APP, [comment]);
+
+    resetReviewSteps("r1");
+
+    assert.equal(findFileReviews("r1"), undefined);
   });
 });

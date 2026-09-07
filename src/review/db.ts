@@ -5,6 +5,7 @@ import { DatabaseSync } from "node:sqlite";
 
 import type { Finding } from "../analysis/types.js";
 import type { ChangedFile, ChangeStatus } from "../changed-files.js";
+import type { CommentScope, CommentSeverity, ReviewComment } from "./comments.js";
 import { UserFacingError } from "../errors.js";
 import type { TaskContext } from "./task-context.js";
 import type { ReviewSession } from "./session.js";
@@ -79,6 +80,35 @@ CREATE TABLE IF NOT EXISTS analyze_pr (
   -- grouping is rebuilt on the way out.
   findings    TEXT    NOT NULL,
   analyzed_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS review_file (
+  -- The fact that step 6 looked at this file, which exists whether or not it
+  -- had anything to say. A file reviewed with nothing to comment has a row here
+  -- and none in review_comment; a file nobody reviewed has neither.
+  review_id   TEXT    NOT NULL,
+  path_id     TEXT    NOT NULL,
+  reviewed_at INTEGER NOT NULL,
+  PRIMARY KEY (review_id, path_id),
+  FOREIGN KEY (review_id, path_id) REFERENCES changed_file (review_id, path_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS review_comment (
+  review_id TEXT    NOT NULL,
+  path_id   TEXT    NOT NULL,
+  -- Several comments per file, kept in the order the review concluded them.
+  position  INTEGER NOT NULL,
+  scope     TEXT    NOT NULL,
+  line      INTEGER,
+  end_line  INTEGER,
+  severity  TEXT    NOT NULL,
+  title     TEXT    NOT NULL,
+  body      TEXT    NOT NULL,
+  raised_by TEXT,
+  PRIMARY KEY (review_id, path_id, position),
+  -- Points at the review of the file, not at the file: a comment exists because
+  -- somebody reviewed it, so it cannot outlive that review.
+  FOREIGN KEY (review_id, path_id) REFERENCES review_file (review_id, path_id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS file_diff (
@@ -623,4 +653,141 @@ export function findFetchedPathIds(reviewId: string): string[] {
     .all(reviewId) as unknown as { path_id: string }[];
 
   return rows.map((row) => row.path_id);
+}
+
+interface CommentRow {
+  path: string;
+  scope: string;
+  line: number | null;
+  end_line: number | null;
+  severity: string;
+  title: string;
+  body: string;
+  raised_by: string | null;
+}
+
+function toComment(row: CommentRow): ReviewComment {
+  const scope = row.scope as CommentScope;
+
+  return {
+    scope,
+    // A pr-scoped comment belongs to no file, which is why it has no path even
+    // though it is stored under the one it was recorded from.
+    ...(scope === "pr" ? {} : { path: row.path }),
+    ...(row.line === null ? {} : { line: row.line }),
+    ...(row.end_line === null ? {} : { endLine: row.end_line }),
+    severity: row.severity as CommentSeverity,
+    title: row.title,
+    body: row.body,
+    ...(row.raised_by === null ? {} : { raisedBy: row.raised_by }),
+  };
+}
+
+/**
+ * Stores what step 6 concluded about one file, replacing what was there.
+ *
+ * Recording a file again is redoing its review, not adding to it: step 8 sends
+ * comments back for another pass and expects the new ones to take their place.
+ * The row in review_file goes in first because the comments hang off it, and it
+ * is what says the file was reviewed at all.
+ */
+export function saveFileReview(
+  reviewId: string,
+  pathId: string,
+  comments: ReviewComment[],
+): void {
+  const db = connect();
+
+  db.exec("BEGIN");
+
+  try {
+    db.prepare(`DELETE FROM review_comment WHERE review_id = ? AND path_id = ?`).run(
+      reviewId,
+      pathId,
+    );
+
+    db.prepare(
+      `INSERT INTO review_file (review_id, path_id, reviewed_at)
+       VALUES (?, ?, ?)
+       ON CONFLICT (review_id, path_id) DO UPDATE SET reviewed_at = excluded.reviewed_at`,
+    ).run(reviewId, pathId, Date.now());
+
+    const insert = db.prepare(
+      `INSERT INTO review_comment
+         (review_id, path_id, position, scope, line, end_line, severity, title, body, raised_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    comments.forEach((comment, position) => {
+      insert.run(
+        reviewId,
+        pathId,
+        position,
+        comment.scope,
+        comment.line ?? null,
+        comment.endLine ?? null,
+        comment.severity,
+        comment.title,
+        comment.body,
+        comment.raisedBy ?? null,
+      );
+    });
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+
+    throw error;
+  }
+}
+
+/** The comments of one file, or undefined when step 6 has not recorded it. */
+export function findFileReview(reviewId: string, pathId: string): ReviewComment[] | undefined {
+  const reviewed = connect()
+    .prepare(`SELECT 1 FROM review_file WHERE review_id = ? AND path_id = ?`)
+    .get(reviewId, pathId);
+
+  if (reviewed === undefined) {
+    return undefined;
+  }
+
+  const rows = connect()
+    .prepare(
+      `SELECT f.path AS path, c.scope, c.line, c.end_line, c.severity, c.title, c.body, c.raised_by
+         FROM review_comment c
+         JOIN changed_file f ON f.review_id = c.review_id AND f.path_id = c.path_id
+        WHERE c.review_id = ? AND c.path_id = ?
+        ORDER BY c.position`,
+    )
+    .all(reviewId, pathId) as unknown as CommentRow[];
+
+  return rows.map(toComment);
+}
+
+/**
+ * Every file step 6 has recorded, keyed by path and in the listing order.
+ * Files reviewed with nothing to say are in it, with an empty list.
+ */
+export function findFileReviews(reviewId: string): Map<string, ReviewComment[]> | undefined {
+  const reviewed = connect()
+    .prepare(
+      `SELECT r.path_id AS path_id, f.path AS path
+         FROM review_file r
+         JOIN changed_file f ON f.review_id = r.review_id AND f.path_id = r.path_id
+        WHERE r.review_id = ?
+        ORDER BY f.position`,
+    )
+    .all(reviewId) as unknown as { path_id: string; path: string }[];
+
+  if (reviewed.length === 0) {
+    return undefined;
+  }
+
+  const byPath = new Map<string, ReviewComment[]>();
+
+  for (const file of reviewed) {
+    byPath.set(file.path, findFileReview(reviewId, file.path_id) ?? []);
+  }
+
+  return byPath;
 }

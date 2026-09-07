@@ -42,7 +42,7 @@ Para **cada** archivo de la lista, en orden:
 1. `get_file_diff` con el `reviewId` y el `pathId` del archivo, que viene en la
    lista de `get_pr_files`. Si el diff llega por partes, pide las siguientes con
    `nextOffset` hasta terminar el archivo.
-2. Usa el prompt `review_file` con ese archivo y sigue lo que te pide: analizar
+2. Usa el prompt `review_file` con ese mismo `pathId` y sigue lo que te pide: analizar
    desde los cinco roles y quedarte con la conclusión del líder de proyecto.
 3. Registra el resultado con `record_file_review`, incluso si no hay nada que
    señalar, para que quede constancia de que ese archivo se revisó.

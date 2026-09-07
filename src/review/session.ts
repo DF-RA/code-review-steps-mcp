@@ -9,6 +9,7 @@ import type { TaskContext } from "./task-context.js";
 import { UserFacingError } from "../errors.js";
 import {
   findAnalysis,
+  findFileReviews,
   findReviewById,
   findReviewFiles,
   findTaskContext,
@@ -185,6 +186,7 @@ export function requireSession(reviewId: string): ReviewSession {
     taskContext: findTaskContext(stored.id),
     files: findReviewFiles(stored.id),
     analysis: findAnalysis(stored.id),
+    reviews: findFileReviews(stored.id),
   };
 
   prune();
