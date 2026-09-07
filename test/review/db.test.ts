@@ -10,9 +10,11 @@ import {
   findAnalysis,
   findDraft,
   findFetchedPathIds,
+  findPublishedReviews,
   findFileReview,
   findFileReviews,
   findFileDiff,
+  findFixes,
   findReviewByHead,
   findReviewFiles,
   hasReviewFiles,
@@ -23,6 +25,9 @@ import {
   saveDraftComment,
   saveDraftConfirmed,
   saveFileDiff,
+  saveFix,
+  saveFixes,
+  savePublishedReview,
   saveFileReview,
   saveReviewFiles,
   findReviewById,
@@ -854,5 +859,152 @@ describe("the draft", () => {
     resetReviewSteps("r1");
 
     assert.equal(findDraft("r1"), undefined);
+  });
+});
+
+describe("what was already published", () => {
+  const first = { publishedAt: 1_700_000_000_000, event: "COMMENT", url: "https://gh/r/1", comments: 3 };
+  const second = { publishedAt: 1_700_000_900_000, event: "REQUEST_CHANGES", comments: 2 };
+
+  test("says nothing was published before anything was", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    assert.deepEqual(findPublishedReviews("r1"), []);
+  });
+
+  test("keeps every publication, oldest first", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    savePublishedReview("r1", second);
+    savePublishedReview("r1", first);
+
+    assert.deepEqual(findPublishedReviews("r1"), [first, second]);
+  });
+
+  test("does not lose one publication behind another of the same review", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+
+    savePublishedReview("r1", first);
+    savePublishedReview("r1", { ...first, event: "APPROVE" });
+
+    assert.equal(findPublishedReviews("r1").length, 2);
+  });
+
+  test("survives restarting the review, because GitHub does not restart", (t) => {
+    useTempDb(t);
+    saveReview(stored());
+    savePublishedReview("r1", first);
+
+    resetReviewSteps("r1");
+
+    assert.deepEqual(findPublishedReviews("r1"), [first]);
+  });
+
+  test("refuses a publication of a review that does not exist", (t) => {
+    useTempDb(t);
+
+    assert.throws(() => savePublishedReview("no-existe", first), /FOREIGN KEY constraint failed/u);
+  });
+});
+
+describe("the work list", () => {
+  const draftComment = {
+    id: "abc123def456",
+    scope: "line" as const,
+    severity: "issue" as const,
+    path: "src/app.ts",
+    line: 12,
+    title: "El error se traga",
+    body: "El catch vacío oculta el fallo.",
+    status: "valid" as const,
+    edited: false,
+  };
+
+  const fix = {
+    id: "abc123def456",
+    path: "src/app.ts",
+    line: 12,
+    severity: "issue",
+    title: "El error se traga",
+    body: "El catch vacío oculta el fallo.",
+    status: "pending" as const,
+  };
+
+  function reviewWithDraft(): void {
+    saveReview(stored());
+    saveDraft("r1", { comments: [draftComment], confirmed: true, createdAt: 1 });
+  }
+
+  test("gives back the points in the order the list was built", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+
+    saveFixes("r1", [fix]);
+
+    assert.deepEqual(findFixes("r1"), [fix]);
+  });
+
+  test("does not answer before step 9b has run", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+
+    assert.equal(findFixes("r1"), undefined);
+  });
+
+  test("keeps a point closed, with the note of what was done", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+    saveFixes("r1", [fix]);
+
+    saveFix("r1", { ...fix, status: "done", note: "Se propaga el error al llamante." });
+
+    const back = findFixes("r1")?.[0];
+
+    assert.equal(back?.status, "done");
+    assert.equal(back?.note, "Se propaga el error al llamante.");
+  });
+
+  test("keeps a point that was deliberately skipped", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+    saveFixes("r1", [fix]);
+
+    saveFix("r1", { ...fix, status: "skipped", note: "Va en otro PR." });
+
+    assert.equal(findFixes("r1")?.[0]?.status, "skipped");
+  });
+
+  test("refuses a point that comes from no approved comment", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+
+    assert.throws(
+      () => saveFixes("r1", [{ ...fix, id: "no-existe" }]),
+      /FOREIGN KEY constraint failed/u,
+    );
+  });
+
+  test("goes away when the draft is rebuilt", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+    saveFixes("r1", [fix]);
+
+    // Redrafting replaces draft_comment, and the list hangs off it.
+    saveDraft("r1", { comments: [], confirmed: false, createdAt: 2 });
+
+    assert.equal(findFixes("r1"), undefined);
+  });
+
+  test("goes away when the review is restarted", (t) => {
+    useTempDb(t);
+    reviewWithDraft();
+    saveFixes("r1", [fix]);
+
+    resetReviewSteps("r1");
+
+    assert.equal(findFixes("r1"), undefined);
   });
 });

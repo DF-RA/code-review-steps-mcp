@@ -11,17 +11,13 @@ import {
   findAnalysis,
   findDraft,
   findFileReviews,
+  findFixes,
   findReviewById,
   findReviewFiles,
   findTaskContext,
   hasTaskContext,
   resetReviewSteps,
-  saveAnalysis,
-  saveDraft,
-  saveFileReview,
   saveReview,
-  saveReviewFiles,
-  saveTaskContext,
 } from "./db.js";
 
 /**
@@ -87,49 +83,14 @@ export interface ReviewSession {
  * page of the draft depends on, since it is written by a browser and read by a
  * tool that may run much later.
  */
-function persist(session: ReviewSession): ReviewSession {
+export function createSession(data: Omit<ReviewSession, "id" | "createdAt">): ReviewSession {
+  const session: ReviewSession = { ...data, id: randomUUID(), createdAt: Date.now() };
+
+  // Only step 1 has run, so the row is the whole of it; every later step writes
+  // its own table as it goes.
   saveReview(session);
 
-  // A session restored from a file brings the later steps with it, and each row
-  // points at the one before, so they go in the order the keys require.
-  if (session.taskContext) {
-    saveTaskContext(session.id, session.taskContext);
-  }
-
-  if (session.files) {
-    saveReviewFiles(session.id, session.files);
-  }
-
-  if (session.analysis) {
-    saveAnalysis(session.id, session.analysis);
-  }
-
-  if (session.reviews) {
-    const byPath = new Map(session.files?.map((file) => [file.path, file.pathId]));
-
-    for (const [path, comments] of session.reviews) {
-      const pathId = byPath.get(path);
-
-      if (pathId) {
-        saveFileReview(session.id, pathId, comments);
-      }
-    }
-  }
-
-  if (session.draft) {
-    saveDraft(session.id, session.draft);
-  }
-
   return session;
-}
-
-export function createSession(data: Omit<ReviewSession, "id" | "createdAt">): ReviewSession {
-  return persist({ ...data, id: randomUUID(), createdAt: Date.now() });
-}
-
-/** Puts a session restored from a file back into play, under its own id. */
-export function adoptSession(session: ReviewSession): ReviewSession {
-  return persist(session);
 }
 
 /** Puts a review back to just after step 1. */
@@ -162,6 +123,7 @@ export function requireSession(reviewId: string): ReviewSession {
     analysis: findAnalysis(id),
     reviews: findFileReviews(id),
     draft: findDraft(id),
+    fixes: findFixes(id),
   };
 }
 

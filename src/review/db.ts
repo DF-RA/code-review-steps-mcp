@@ -7,6 +7,7 @@ import type { Finding } from "../analysis/types.js";
 import type { ChangedFile, ChangeStatus } from "../changed-files.js";
 import type { CommentScope, CommentSeverity, ReviewComment } from "./comments.js";
 import type { Draft, DraftComment, DraftStatus } from "../draft/draft.js";
+import type { FixItem, FixStatus } from "./fixes.js";
 import { UserFacingError } from "../errors.js";
 import type { TaskContext } from "./task-context.js";
 import type { ReviewSession } from "./session.js";
@@ -112,6 +113,18 @@ CREATE TABLE IF NOT EXISTS review_comment (
   FOREIGN KEY (review_id, path_id) REFERENCES review_file (review_id, path_id) ON DELETE CASCADE
 );
 
+CREATE TABLE IF NOT EXISTS published_review (
+  -- One row per publication, not per review: publishing twice is possible, and
+  -- what this table is for is being able to say so.
+  id           INTEGER PRIMARY KEY,
+  review_id    TEXT    NOT NULL REFERENCES reviews (id) ON DELETE CASCADE,
+  published_at INTEGER NOT NULL,
+  event        TEXT    NOT NULL,
+  url          TEXT,
+  comments     INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS published_by_review ON published_review (review_id, published_at);
+
 CREATE TABLE IF NOT EXISTS draft (
   review_id  TEXT    PRIMARY KEY REFERENCES reviews (id) ON DELETE CASCADE,
   confirmed  INTEGER NOT NULL,
@@ -136,6 +149,26 @@ CREATE TABLE IF NOT EXISTS draft_comment (
   status    TEXT    NOT NULL,
   edited    INTEGER NOT NULL,
   PRIMARY KEY (review_id, id)
+);
+
+CREATE TABLE IF NOT EXISTS fix (
+  review_id TEXT    NOT NULL,
+  -- The id of the draft comment this came from, which is what lets the list be
+  -- rebuilt without losing what was already resolved.
+  id        TEXT    NOT NULL,
+  position  INTEGER NOT NULL,
+  path      TEXT,
+  line      INTEGER,
+  end_line  INTEGER,
+  severity  TEXT    NOT NULL,
+  title     TEXT    NOT NULL,
+  body      TEXT    NOT NULL,
+  status    TEXT    NOT NULL,
+  -- What was done about it, or why it was not. The record of why the code ended
+  -- up the way it did.
+  note      TEXT,
+  PRIMARY KEY (review_id, id),
+  FOREIGN KEY (review_id, id) REFERENCES draft_comment (review_id, id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS file_diff (
@@ -553,6 +586,7 @@ export function resetReviewSteps(reviewId: string): void {
   db.exec("BEGIN");
 
   try {
+    db.prepare(`DELETE FROM fix WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM draft WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM analyze_pr WHERE review_id = ?`).run(reviewId);
     db.prepare(`DELETE FROM changed_file WHERE review_id = ?`).run(reviewId);
@@ -945,4 +979,148 @@ export function saveDraftConfirmed(reviewId: string, confirmed: boolean): void {
   connect()
     .prepare(`UPDATE draft SET confirmed = ? WHERE review_id = ?`)
     .run(confirmed ? 1 : 0, reviewId);
+}
+
+export interface PublishedReview {
+  publishedAt: number;
+  event: string;
+  url?: string;
+  comments: number;
+}
+
+/**
+ * Records that a review was published on GitHub.
+ *
+ * Kept apart from everything else the steps produce because it is the only
+ * thing here that happened outside this machine: restarting the review cannot
+ * undo it, so restarting must not erase the record of it either.
+ */
+export function savePublishedReview(reviewId: string, published: PublishedReview): void {
+  connect()
+    .prepare(
+      `INSERT INTO published_review (review_id, published_at, event, url, comments)
+       VALUES (?, ?, ?, ?, ?)`,
+    )
+    .run(
+      reviewId,
+      published.publishedAt,
+      published.event,
+      published.url ?? null,
+      published.comments,
+    );
+}
+
+/** Every time this review was published, oldest first. */
+export function findPublishedReviews(reviewId: string): PublishedReview[] {
+  const rows = connect()
+    .prepare(
+      `SELECT published_at, event, url, comments FROM published_review
+        WHERE review_id = ? ORDER BY published_at`,
+    )
+    .all(reviewId) as unknown as {
+    published_at: number;
+    event: string;
+    url: string | null;
+    comments: number;
+  }[];
+
+  return rows.map((row) => ({
+    publishedAt: row.published_at,
+    event: row.event,
+    ...(row.url === null ? {} : { url: row.url }),
+    comments: row.comments,
+  }));
+}
+
+interface FixRow {
+  id: string;
+  path: string | null;
+  line: number | null;
+  end_line: number | null;
+  severity: string;
+  title: string;
+  body: string;
+  status: string;
+  note: string | null;
+}
+
+/**
+ * Stores the work list, replacing the previous one.
+ *
+ * create_fix_list rebuilds it from the approved comments and carries over what
+ * was already resolved itself, so what arrives here is the whole list.
+ */
+export function saveFixes(reviewId: string, fixes: FixItem[]): void {
+  const db = connect();
+
+  db.exec("BEGIN");
+
+  try {
+    db.prepare(`DELETE FROM fix WHERE review_id = ?`).run(reviewId);
+
+    const insert = db.prepare(
+      `INSERT INTO fix
+         (review_id, id, position, path, line, end_line, severity, title, body, status, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    fixes.forEach((fix, position) => {
+      insert.run(
+        reviewId,
+        fix.id,
+        position,
+        fix.path ?? null,
+        fix.line ?? null,
+        fix.endLine ?? null,
+        fix.severity,
+        fix.title,
+        fix.body,
+        fix.status,
+        fix.note ?? null,
+      );
+    });
+
+    db.exec("COMMIT");
+  } catch (error) {
+    db.exec("ROLLBACK");
+
+    throw error;
+  }
+}
+
+/** The work list of a review, or undefined when step 9b has not run. */
+export function findFixes(reviewId: string): FixItem[] | undefined {
+  const rows = connect()
+    .prepare(
+      `SELECT id, path, line, end_line, severity, title, body, status, note
+         FROM fix WHERE review_id = ? ORDER BY position`,
+    )
+    .all(reviewId) as unknown as FixRow[];
+
+  if (rows.length === 0) {
+    return undefined;
+  }
+
+  return rows.map((row) => ({
+    id: row.id,
+    ...(row.path === null ? {} : { path: row.path }),
+    ...(row.line === null ? {} : { line: row.line }),
+    ...(row.end_line === null ? {} : { endLine: row.end_line }),
+    severity: row.severity,
+    title: row.title,
+    body: row.body,
+    status: row.status as FixStatus,
+    ...(row.note === null ? {} : { note: row.note }),
+  }));
+}
+
+/**
+ * Writes back one point of the list.
+ * Both the tool and the page close points one at a time, so this writes a row
+ * rather than the whole list.
+ */
+export function saveFix(reviewId: string, fix: FixItem): void {
+  connect()
+    .prepare(`UPDATE fix SET status = ?, note = ? WHERE review_id = ? AND id = ?`)
+    .run(fix.status, fix.note ?? null, reviewId, fix.id);
 }

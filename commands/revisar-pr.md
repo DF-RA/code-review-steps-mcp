@@ -104,12 +104,14 @@ Repite hasta que no quede nada pendiente. Ve informando en corto del avance.
 
 ## Interrumpir y retomar
 
-Si en cualquier punto te digo que lo dejamos, llama a `export_review` y dame la
-ruta del archivo. La revisión vive en memoria y caduca a las 4 horas: sin exportar
-se pierde todo el trabajo hecho.
+Si en cualquier punto lo dejamos, no hay que hacer nada: cada paso guarda lo
+suyo según lo produce, así que la revisión sigue ahí aunque cierre Claude Code.
 
-Cuando te pida continuar una revisión, llama a `import_review` con esa ruta y
-sigue desde el paso donde se quedó, que la propia tool te dice.
+Para continuarla, vuelve a llamar a `start_review` con el mismo PR. Si el head no
+ha cambiado, te devuelve la misma revisión con su `reviewId`, y los pasos ya
+hechos se reutilizan en vez de repetirse. Si el PR se movió, te lo dice.
+
+Para rehacerla desde cero, `start_review` con `restart: true`.
 
 ## Reglas
 

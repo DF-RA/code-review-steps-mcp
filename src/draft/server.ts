@@ -3,7 +3,7 @@ import type { AddressInfo } from "node:net";
 
 import { DRAFT_STATUSES, type DraftStatus } from "./draft.js";
 import { renderPage } from "./page.js";
-import { saveDraftComment, saveDraftConfirmed } from "../review/db.js";
+import { saveDraftComment, saveDraftConfirmed, saveFix } from "../review/db.js";
 import { requireSession, type ReviewSession } from "../review/session.js";
 
 /**
@@ -103,6 +103,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     if (typeof payload.note === "string") {
       fix.note = payload.note.trim() || undefined;
     }
+
+    saveFix(session.id, fix);
 
     send(response, 200, "application/json; charset=utf-8", JSON.stringify(fix));
     return;

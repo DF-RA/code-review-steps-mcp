@@ -3,7 +3,6 @@ import { describe, test } from "node:test";
 
 import { UserFacingError } from "../../src/errors.js";
 import {
-  adoptSession,
   createSession,
   requireAnalysis,
   requireFiles,
@@ -101,29 +100,6 @@ describe("requireSession", () => {
       assert.match(error.message, /start_review/u);
       return true;
     });
-  });
-});
-
-describe("adoptSession", () => {
-  test("puts a restored session back into play under its own id", (t) => {
-    useTempDb(t);
-
-    const restored = { ...sessionData(), id: "imported-1", createdAt: Date.now() };
-
-    assert.equal(adoptSession(restored), restored);
-    assert.equal(requireSession("imported-1").prNumber, restored.prNumber);
-  });
-
-  test("replaces a session already held under that id", (t) => {
-    useTempDb(t);
-
-    const first = { ...sessionData(), id: "same", createdAt: Date.now() };
-    const second = { ...sessionData({ prNumber: 999 }), id: "same", createdAt: Date.now() };
-
-    adoptSession(first);
-    adoptSession(second);
-
-    assert.equal(requireSession("same").prNumber, 999);
   });
 });
 

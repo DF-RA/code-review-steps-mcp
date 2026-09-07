@@ -301,9 +301,10 @@ Por qué encadenado y no cuatro tools sueltas:
 El `reviewId` viaja por referencia: el diff y los hallazgos se quedan en el
 servidor, no se arrastran por el contexto del agente de un paso a otro.
 
-Las revisiones viven en memoria del proceso y caducan a las 4 horas. Para no
-perder el trabajo hecho, se exportan a un archivo y se retoman cuando quieras
-(ver **Interrumpir y retomar** más abajo).
+Las revisiones viven en SQLite, en `~/.code-review-steps/reviews.db`. Cada paso
+guarda lo que produce según lo produce, así que nada se pierde al cerrar el
+proceso y ningún paso se repite si ya se hizo (ver **Interrumpir y retomar** más
+abajo).
 
 ## Los pasos
 
@@ -619,41 +620,30 @@ esto sale de tu máquina.
 
 ## Interrumpir y retomar
 
-Una revisión de 48 archivos es trabajo de un rato, y vive en memoria del proceso:
-reiniciar Claude Code la borra. Estas dos tools la hacen persistente.
+Una revisión de 48 archivos es trabajo de un rato, y no se pierde: cada paso
+escribe lo suyo en SQLite en cuanto lo produce.
 
-### `export_review(reviewId, file?)`
-
-Guarda la revisión entera en un JSON: el pull request, los commits congelados, la
-tarea, los archivos, el análisis de las herramientas, los comentarios y **las
-decisiones que tomaste sobre cada uno**.
-
-Por defecto va a `~/.code-review-steps/<repo>-pr<número>.json`, uno por pull
-request. Con `file` se puede elegir otra ruta.
-
-Devuelve un resumen de por dónde iba, que es lo que verás al retomarla:
+Para continuarla, vuelve a llamar a `start_review` con el mismo pull request. Si
+el head no ha cambiado, devuelve **la misma revisión con su `reviewId`** y avisa
+de que la retoma:
 
 ```
-PR #123 — feat: [PROJ-1234] añadir el campo de cancelación al evento
-Rama: feature/campo-cancelacion → develop
-Tarea: PROJ-1234
-Archivos: 48
-Análisis: PMD, Ruff, Semgrep
-Revisados: 1 de 48
-Borrador: 2 comentario(s) · 1 válidos, 0 descartados, 1 para otra vuelta, 0 sin revisar
+Head en GitHub: ab01bc07
+Ya había una revisión de este mismo head: se retoma, no se abre otra.
 ```
 
-### `import_review(file)`
+A partir de ahí, los pasos ya hechos se reutilizan en lugar de repetirse: el
+contexto de la tarea no se vuelve a buscar, la lista de archivos no se vuelve a
+calcular y **los analizadores no se vuelven a ejecutar**, que es lo que de verdad
+cuesta tiempo.
 
-Devuelve la revisión al servidor **con el mismo `reviewId`**, así que los pasos
-siguientes y el enlace del borrador funcionan igual que antes.
+Si el pull request recibió commits nuevos, el head es otro: se abre una revisión
+nueva y se avisa de que la anterior quedó atrás.
 
-Comprueba que el clon siga ahí y que el commit revisado siga en él. Si la rama se
-borró o el clon cambió, avisa: lo revisado corresponde a unos commits concretos y
-seguir a ciegas sobre otros sería peor que empezar de nuevo.
-
-El formato lleva un número de versión: un archivo guardado con otra versión del
-servidor falla diciéndolo, en vez de cargarse a medias.
+Para rehacerla desde cero, `start_review` con `restart: true`. Borra el contexto,
+los archivos, el análisis, los comentarios y el borrador, y conserva el mismo
+`reviewId`. Lo único que no borra es el registro de lo que ya se publicó en
+GitHub: eso ocurrió fuera de tu máquina y reiniciar aquí no lo deshace.
 
 ## Extensiones
 

@@ -4,6 +4,7 @@ import { z } from "zod";
 import { draftUrl, ensureServer } from "../draft/server.js";
 import { UserFacingError } from "../errors.js";
 import { FIX_STATUSES, countFixes, type FixItem } from "../review/fixes.js";
+import { saveFix, saveFixes } from "../review/db.js";
 import { requireSession, type ReviewSession } from "../review/session.js";
 
 function requireFixes(session: ReviewSession): FixItem[] {
@@ -79,6 +80,8 @@ export function registerFixList(server: McpServer): void {
             note: existing?.note,
           };
         });
+
+        saveFixes(session.id, session.fixes);
 
         const url = draftUrl(await ensureServer(), session.id);
 
@@ -240,6 +243,8 @@ export function registerFixList(server: McpServer): void {
 
         fix.status = status;
         fix.note = note.trim() || undefined;
+
+        saveFix(session.id, fix);
 
         const counts = countFixes(fixes);
 

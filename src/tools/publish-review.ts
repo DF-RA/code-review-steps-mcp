@@ -10,6 +10,11 @@ import { renderDraftComment, type DraftComment } from "../draft/draft.js";
 import { UserFacingError } from "../errors.js";
 import { runGit } from "../git/git.js";
 import { runGh } from "../github/gh.js";
+import {
+  findPublishedReviews,
+  savePublishedReview,
+  type PublishedReview,
+} from "../review/db.js";
 import { requireSession, type ReviewSession } from "../review/session.js";
 
 const REVIEW_EVENTS = ["COMMENT", "REQUEST_CHANGES", "APPROVE"] as const;
@@ -34,6 +39,8 @@ const outputSchema = {
   onPr: z.number(),
   demoted: z.array(z.string()),
   blockers: z.number(),
+  /** Times this same review was already published. */
+  timesPublished: z.number(),
 };
 
 interface GhComment {
@@ -43,6 +50,31 @@ interface GhComment {
   start_line?: number;
   side?: "RIGHT";
   subject_type?: "file";
+}
+
+/**
+ * What to say about the times this review already went out.
+ *
+ * Publishing is the one thing here that cannot be undone, and a review now
+ * outlives the process that made it: its approved comments stay ready to send
+ * for as long as the row exists, so a second call has to be a decision and not
+ * an accident.
+ */
+function describePublished(previous: PublishedReview[]): string[] {
+  if (previous.length === 0) {
+    return [];
+  }
+
+  return [
+    "",
+    `AVISO: esta revisión ya se publicó ${previous.length} vez(ces) en el PR.`,
+    ...previous.map((entry) => {
+      const when = new Date(entry.publishedAt).toISOString().replace("T", " ").slice(0, 16);
+
+      return `  · ${when} · ${entry.event} · ${entry.comments} comentario(s)${entry.url ? ` · ${entry.url}` : ""}`;
+    }),
+    "Publicar otra vez añade un review nuevo al PR; no reemplaza el anterior.",
+  ];
 }
 
 /** GitHub only accepts inline comments on lines that appear in the diff. */
@@ -154,6 +186,7 @@ export function registerPublishReview(server: McpServer): void {
         const onFile = payload.comments.filter((comment) => comment.subject_type === "file").length;
         const inline = payload.comments.length - onFile;
 
+        const previous = findPublishedReviews(session.id);
         const counts = {
           reviewId: session.id,
           inline,
@@ -161,6 +194,7 @@ export function registerPublishReview(server: McpServer): void {
           onPr,
           demoted: payload.demoted,
           blockers,
+          timesPublished: previous.length,
         };
 
         // Without an explicit event nothing is published: publishing is
@@ -181,6 +215,8 @@ export function registerPublishReview(server: McpServer): void {
               ...payload.demoted.map((entry) => `  · ${entry}`),
             );
           }
+
+          lines.push(...describePublished(previous));
 
           lines.push(
             "",
@@ -221,6 +257,13 @@ export function registerPublishReview(server: McpServer): void {
 
         const created = JSON.parse(stdout) as { html_url?: string };
 
+        savePublishedReview(session.id, {
+          publishedAt: Date.now(),
+          event,
+          url: created.html_url,
+          comments: comments.length,
+        });
+
         return {
           content: [
             {
@@ -228,6 +271,9 @@ export function registerPublishReview(server: McpServer): void {
               text: [
                 `Publicado como review ${event} en el PR #${session.prNumber}.`,
                 `${comments.length} comentario(s): ${inline} en línea, ${onFile} de archivo, ${onPr} en el cuerpo.`,
+                previous.length > 0
+                  ? `Es la publicación número ${previous.length + 1} de esta revisión: las anteriores siguen en el PR.`
+                  : "",
                 created.html_url ? `Míralo aquí: ${created.html_url}` : "",
               ]
                 .filter(Boolean)
