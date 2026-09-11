@@ -6,7 +6,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { changedLinesByFile } from "../analysis/changed-lines.js";
-import { renderDraftComment, type DraftComment } from "../draft/draft.js";
+import type { DraftComment } from "../draft/draft.js";
 import { UserFacingError } from "../errors.js";
 import { runGit } from "../git/git.js";
 import { runGh } from "../github/gh.js";
@@ -15,6 +15,7 @@ import {
   savePublishedReview,
   type PublishedReview,
 } from "../review/db.js";
+import { buildPublication, type FileComment } from "../review/publication.js";
 import { requireSession, type ReviewSession } from "../review/session.js";
 
 const REVIEW_EVENTS = ["COMMENT", "REQUEST_CHANGES", "APPROVE"] as const;
@@ -39,18 +40,11 @@ const outputSchema = {
   onPr: z.number(),
   demoted: z.array(z.string()),
   blockers: z.number(),
+  /** File comments GitHub refused, one line each. Empty when everything landed. */
+  failed: z.array(z.string()),
   /** Times this same review was already published. */
   timesPublished: z.number(),
 };
-
-interface GhComment {
-  path: string;
-  body: string;
-  line?: number;
-  start_line?: number;
-  side?: "RIGHT";
-  subject_type?: "file";
-}
 
 /**
  * What to say about the times this review already went out.
@@ -88,59 +82,65 @@ function approved(session: ReviewSession): DraftComment[] {
   return (session.draft?.comments ?? []).filter((comment) => comment.status === "valid");
 }
 
-interface Payload {
-  body: string;
-  comments: GhComment[];
-  demoted: string[];
+interface FileCommentOutcome {
+  posted: number;
+  /** One line per comment GitHub refused, with the reason. */
+  failed: string[];
 }
 
-function buildPayload(comments: DraftComment[], lines: Map<string, Set<number>>): Payload {
-  const inline: GhComment[] = [];
-  const prLevel: string[] = [];
-  const demoted: string[] = [];
+/**
+ * Posts the file comments, one call each.
+ *
+ * They cannot travel inside the review: `subject_type` only exists on the
+ * single-comment endpoint, and a review carrying a comment without a line is
+ * rejected whole, taking every other comment down with it. So they go after the
+ * review is in, and a file GitHub dislikes costs that comment alone.
+ */
+async function postFileComments(
+  session: ReviewSession,
+  slug: string,
+  comments: FileComment[],
+  dir: string,
+): Promise<FileCommentOutcome> {
+  // The sha GitHub reported for the head: the local clone may sit elsewhere.
+  const commitId = session.headRefOid || session.headSha;
+  const outcome: FileCommentOutcome = { posted: 0, failed: [] };
 
-  for (const comment of comments) {
-    const rendered = renderDraftComment(comment);
+  for (const [index, comment] of comments.entries()) {
+    const payloadPath = join(dir, `file-comment-${index}.json`);
 
-    if (comment.scope === "pr" || !comment.path) {
-      prLevel.push(rendered);
-      continue;
-    }
-
-    if (comment.scope === "file" || comment.line === undefined) {
-      inline.push({ path: comment.path, body: rendered, subject_type: "file" });
-      continue;
-    }
-
-    // A line the pull request did not touch would be rejected by the API, so it
-    // becomes a file comment instead of losing the whole publication.
-    if (!lines.get(comment.path)?.has(comment.line)) {
-      demoted.push(`${comment.path} L${comment.line} — ${comment.title}`);
-      inline.push({
+    await writeFile(
+      payloadPath,
+      JSON.stringify({
+        body: comment.body,
         path: comment.path,
-        body: `${rendered}\n\n_(sobre la línea ${comment.line}, que no forma parte del diff)_`,
+        commit_id: commitId,
         subject_type: "file",
-      });
-      continue;
+      }),
+      "utf8",
+    );
+
+    try {
+      await runGh(
+        [
+          "api",
+          "--method",
+          "POST",
+          `repos/${slug}/pulls/${session.prNumber}/comments`,
+          "--input",
+          payloadPath,
+        ],
+        session.repoPath,
+      );
+      outcome.posted += 1;
+    } catch (error) {
+      const reason = error instanceof UserFacingError ? error.message : String(error);
+
+      outcome.failed.push(`${comment.path} — ${reason.split("\n")[0]}`);
     }
-
-    const entry: GhComment = { path: comment.path, line: comment.line, side: "RIGHT", body: rendered };
-
-    if (comment.endLine && comment.endLine > comment.line) {
-      entry.start_line = comment.line;
-      entry.line = comment.endLine;
-    }
-
-    inline.push(entry);
   }
 
-  const body = [
-    "## Revisión automática",
-    "",
-    ...(prLevel.length > 0 ? [prLevel.join("\n\n")] : ["Los comentarios van en las líneas del diff."]),
-  ].join("\n");
-
-  return { body, comments: inline, demoted };
+  return outcome;
 }
 
 async function repoSlug(cwd: string): Promise<string> {
@@ -180,11 +180,11 @@ export function registerPublishReview(server: McpServer): void {
           );
         }
 
-        const payload = buildPayload(comments, await commentableLines(session));
+        const publication = buildPublication(comments, await commentableLines(session));
         const blockers = comments.filter((comment) => comment.severity === "blocker").length;
         const onPr = comments.filter((comment) => comment.scope === "pr").length;
-        const onFile = payload.comments.filter((comment) => comment.subject_type === "file").length;
-        const inline = payload.comments.length - onFile;
+        const onFile = publication.files.length;
+        const inline = publication.inline.length;
 
         const previous = findPublishedReviews(session.id);
         const counts = {
@@ -192,7 +192,7 @@ export function registerPublishReview(server: McpServer): void {
           inline,
           onFile,
           onPr,
-          demoted: payload.demoted,
+          demoted: publication.demoted,
           blockers,
           timesPublished: previous.length,
         };
@@ -208,11 +208,11 @@ export function registerPublishReview(server: McpServer): void {
             `  · ${blockers} de severidad blocker`,
           ];
 
-          if (payload.demoted.length > 0) {
+          if (publication.demoted.length > 0) {
             lines.push(
               "",
               "Estos apuntaban a líneas que el PR no toca, así que irán como comentario de archivo:",
-              ...payload.demoted.map((entry) => `  · ${entry}`),
+              ...publication.demoted.map((entry) => `  · ${entry}`),
             );
           }
 
@@ -228,7 +228,7 @@ export function registerPublishReview(server: McpServer): void {
 
           return {
             content: [{ type: "text", text: lines.join("\n") }],
-            structuredContent: { ...counts, published: false },
+            structuredContent: { ...counts, failed: [], published: false },
           };
         }
 
@@ -239,29 +239,40 @@ export function registerPublishReview(server: McpServer): void {
         const dir = await mkdtemp(join(tmpdir(), "code-review-publish-"));
         const payloadPath = join(dir, "review.json");
         let stdout: string;
+        let files: FileCommentOutcome;
 
         try {
           await writeFile(
             payloadPath,
-            JSON.stringify({ event, body: payload.body, comments: payload.comments }),
+            JSON.stringify({ event, body: publication.body, comments: publication.inline }),
             "utf8",
           );
 
           stdout = await runGh(
-            ["api", "--method", "POST", `repos/${slug}/pulls/${session.prNumber}/reviews`, "--input", payloadPath],
+            [
+              "api",
+              "--method",
+              "POST",
+              `repos/${slug}/pulls/${session.prNumber}/reviews`,
+              "--input",
+              payloadPath,
+            ],
             session.repoPath,
           );
+
+          files = await postFileComments(session, slug, publication.files, dir);
         } finally {
           await rm(dir, { recursive: true, force: true });
         }
 
         const created = JSON.parse(stdout) as { html_url?: string };
+        const landed = comments.length - files.failed.length;
 
         savePublishedReview(session.id, {
           publishedAt: Date.now(),
           event,
           url: created.html_url,
-          comments: comments.length,
+          comments: landed,
         });
 
         return {
@@ -270,7 +281,14 @@ export function registerPublishReview(server: McpServer): void {
               type: "text",
               text: [
                 `Publicado como review ${event} en el PR #${session.prNumber}.`,
-                `${comments.length} comentario(s): ${inline} en línea, ${onFile} de archivo, ${onPr} en el cuerpo.`,
+                `${landed} comentario(s): ${inline} en línea, ${files.posted} de archivo, ${onPr} en el cuerpo.`,
+                files.failed.length > 0
+                  ? [
+                      "",
+                      `GitHub rechazó ${files.failed.length} comentario(s) de archivo; el review sí quedó publicado:`,
+                      ...files.failed.map((entry) => `  · ${entry}`),
+                    ].join("\n")
+                  : "",
                 previous.length > 0
                   ? `Es la publicación número ${previous.length + 1} de esta revisión: las anteriores siguen en el PR.`
                   : "",
@@ -280,7 +298,14 @@ export function registerPublishReview(server: McpServer): void {
                 .join("\n"),
             },
           ],
-          structuredContent: { ...counts, published: true, event, url: created.html_url },
+          structuredContent: {
+            ...counts,
+            onFile: files.posted,
+            failed: files.failed,
+            published: true,
+            event,
+            url: created.html_url,
+          },
         };
       } catch (error) {
         const message =

@@ -594,15 +594,22 @@ pasa el tipo:
 Es la **única tool del flujo que escribe fuera de tu máquina**, y no se puede
 deshacer: los comentarios quedan en el PR y le llegan al equipo.
 
-Los tres anclajes se reparten así: los de línea van inline, los de archivo como
-comentario de archivo, y los de PR al cuerpo del review.
+Los tres anclajes se reparten así: los de línea van inline dentro del review, los
+de PR al cuerpo del review, y los de archivo **salen aparte**, como comentario
+propio sobre el archivo. No es un capricho: el endpoint que crea un review solo
+acepta comentarios anclados a una línea del diff, así que uno de archivo metido
+ahí hace que GitHub rechace el review entero. Se publican después de que el
+review esté puesto, uno a uno, para que un comentario que GitHub no acepte no se
+lleve por delante a los demás; si alguno falla, la tool te dice cuál.
 
 **Un comentario sobre una línea que el PR no toca no lo acepta la API de GitHub**,
 y eso pasa más de lo que parece: si el cambio deja huérfano un import que ya
 estaba, el problema lo introduce el PR pero la línea culpable no está en el diff.
 En vez de fallar la publicación entera, esos comentarios se degradan a comentario
 de archivo con una nota de a qué línea se referían, y la llamada en seco te dice
-cuáles antes de publicar.
+cuáles antes de publicar. Con un rango pasa algo parecido: GitHub solo acepta
+comentarios multilínea dentro de un mismo hunk, así que si el diff no toca todo
+el rango el comentario se ancla a su primera línea en vez de perderse.
 
 #### `create_fix_list(reviewId)` + `next_fix` + `complete_fix`
 

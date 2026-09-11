@@ -1,5 +1,6 @@
 # Lo mismo que ejecuta `make verify` en local, sobre cada versión de Node que
-# el paquete declara soportar.
+# el paquete declara soportar: `engines` pide >=24, y el servidor importa
+# `node:sqlite`, que no existe antes de esa versión.
 name: CI
 
 on:
@@ -24,7 +25,7 @@ jobs:
       # Un fallo en una versión no oculta el resultado de las otras.
       fail-fast: false
       matrix:
-        node: ["20", "22", "24"]
+        node: ["24"]
 
     steps:
       - uses: actions/checkout@v5
@@ -57,8 +58,6 @@ jobs:
 
       - uses: pnpm/action-setup@v4
 
-      # Los umbrales de cobertura (--test-coverage-lines y compañía) no existen
-      # antes de Node 22, así que este trabajo va aparte de la matriz.
       - uses: actions/setup-node@v5
         with:
           node-version: "24"
