@@ -57,6 +57,12 @@ const STYLE = `
   /* One colour per severity, mirroring the GitHub alert each one publishes as. */
   --blocker:#c0392b; --issue:#b7791f; --suggestion:#2f855a; --question:#2b6cb0;
   --blocker-bg:#c0392b14; --issue-bg:#b7791f14; --suggestion-bg:#2f855a14; --question-bg:#2b6cb014;
+  /* Dracula, for the snippet alone and the same under either theme: that block
+     is a piece of an editor, and an editor does not turn white because the page
+     around it is. Its own dark ground is also what makes the diff tints read. */
+  --dr-bg:#282a36; --dr-fg:#f8f8f2; --dr-gutter:#6272a4; --dr-line:#44475a;
+  --dr-green:#50fa7b; --dr-red:#ff5555; --dr-yellow:#f1fa8c; --dr-pink:#ff79c6;
+  --dr-purple:#bd93f9; --dr-cyan:#8be9fd;
   /* Badges are solid: filled on light, so the count reads at a glance. */
   --b-fg:#fff; --b-pending:#5b6573; --b-valid:#2f855a; --b-discarded:#c0392b; --b-rework:#b7791f; }
 @media (prefers-color-scheme: dark) { :root { --bg:#17181a; --fg:#e8e8e6; --muted:#9a9a96;
@@ -117,6 +123,41 @@ details.group > .fix { margin:0; padding:12px 16px; }
 .body p { margin:.5em 0; } .body h1,.body h2,.body h3 { font-size:15px; margin:.6em 0 .2em; }
 .body code { background:rgba(127,127,127,.16); padding:1px 5px; border-radius:4px; font-size:13px; }
 .body hr { border:0; border-top:1px solid var(--line); margin:12px 0; }
+/* The code the comment points at. Scrolls on its own: a long line must not
+   widen the card, and wrapping it would break the line numbering. */
+.snipwrap { border:1px solid var(--dr-line); border-radius:8px; overflow-x:auto;
+  background:var(--dr-bg); margin:0 0 12px; }
+.snip { border-collapse:collapse; width:100%; color:var(--dr-fg);
+  font:12px/1.6 ui-monospace,SFMono-Regular,Menlo,monospace; }
+.snip td { padding:0 8px; white-space:pre; vertical-align:top; }
+.snip .ln { width:1%; text-align:right; color:var(--dr-gutter); user-select:none;
+  border-right:1px solid var(--dr-line); }
+.snip .mk { width:1%; padding:0 2px 0 6px; color:var(--dr-gutter); user-select:none; }
+/* The band says what the diff did with the line, and only earns its place when
+   some line did something else: in a file the pull request adds whole it lands
+   on every row, distinguishes nothing, and the snippet stops being code and
+   becomes a green rectangle. Then the marker says it on its own. */
+.snip tr.added td { background-color:rgba(80,250,123,.11); }
+.snip tr.added .mk { color:var(--dr-green); }
+.snip tr.removed td { background-color:rgba(255,85,85,.12); }
+.snip tr.removed .mk { color:var(--dr-red); }
+.snip.flat tr.added td, .snip.flat tr.removed td { background-color:transparent; }
+/* Laid over whatever tint the line already has, instead of replacing it: the
+   line commented on is still an added or a removed line. */
+.snip tr.target td { background-image:linear-gradient(rgba(241,250,140,.10),rgba(241,250,140,.10)); }
+.snip tr.target .ln { color:var(--dr-fg); font-weight:650; box-shadow:inset 3px 0 var(--dr-yellow); }
+/* Dracula, token by token: keyword, string, comment, number, call, type,
+   operator. What carries no class is plain foreground. */
+.snip .t-k { color:var(--dr-pink); }
+.snip .t-s { color:var(--dr-yellow); }
+.snip .t-c { color:var(--dr-gutter); font-style:italic; }
+.snip .t-n { color:var(--dr-purple); }
+.snip .t-f { color:var(--dr-green); }
+.snip .t-y { color:var(--dr-cyan); }
+.snip .t-o { color:var(--dr-pink); }
+.snipmore { color:var(--muted); font-size:12px; margin:-6px 0 12px; }
+.nosnip { color:var(--muted); font-size:12px; margin:0 0 12px; padding:8px 10px;
+  border:1px dashed var(--line); border-radius:8px; }
 .actions { display:flex; gap:8px; margin-top:12px; flex-wrap:wrap; }
 button { font:inherit; font-size:13px; padding:5px 12px; border-radius:7px; border:1px solid var(--line);
   background:transparent; color:var(--fg); cursor:pointer; }
@@ -195,7 +236,47 @@ async function save(id, payload) {
 // Which accordions are open, so a reload does not close what you were reading.
 const openGroups = new Set();
 
-function esc(text) { return String(text).replace(/</g, "&lt;"); }
+function esc(text) { return String(text).replace(/&/g, "&amp;").replace(/</g, "&lt;"); }
+
+const MARK = { added: "+", removed: "-", context: " " };
+
+/**
+ * The piece of code the comment points at, the way GitHub shows the hunk over
+ * every review comment: the line commented on is highlighted, and around it the
+ * diff with its context, so the comment can be judged without opening the file.
+ */
+function snippet(comment) {
+  if (comment.scope !== "line" || !comment.path) return "";
+
+  // Said whether there is code to show or not: it is the same consequence, and
+  // it is what the person is deciding about.
+  const warning = comment.snippet && comment.snippet.anchored ? "" :
+    '<div class="nosnip">El PR no cambia esta línea, así que GitHub no admite un ' +
+    'comentario ahí: al publicar irá como comentario del archivo.</div>';
+
+  if (!comment.snippet) return warning;
+
+  const rows = comment.snippet.lines.map(function (line) {
+    // Already coloured by the server: each token carries its class, or none and
+    // then it is plain text.
+    const code = line.tokens.map(function (token) {
+      return token.c ? '<span class="t-' + token.c + '">' + esc(token.t) + '</span>' : esc(token.t);
+    }).join("");
+
+    return '<tr class="' + line.kind + (line.target ? " target" : "") + '">' +
+      '<td class="ln">' + (line.number === undefined ? "" : line.number) + '</td>' +
+      '<td class="mk">' + MARK[line.kind] + '</td>' +
+      '<td class="code">' + code + '</td></tr>';
+  }).join("");
+
+  // With nothing unchanged in the snippet the band would be the whole block, so
+  // it goes: what every line has in common is not worth painting.
+  const mixed = comment.snippet.lines.some(function (line) { return line.kind === "context"; });
+
+  return '<div class="snipwrap"><table class="snip' + (mixed ? "" : " flat") + '"><tbody>' +
+    rows + '</tbody></table></div>' +
+    (comment.snippet.truncated ? '<div class="snipmore">… recortado</div>' : "") + warning;
+}
 
 function badge(count, label, kind) {
   return '<span class="badge' + (count === 0 ? " zero" : "") + '" data-kind="' + kind + '">' +
@@ -269,6 +350,7 @@ function card(comment) {
     (SEV[comment.severity] || comment.severity) + '</span>' +
     '<span class="tag">' + where + '</span>' +
     (comment.edited ? '<span class="tag">editado</span>' : '') + '</div>' +
+    snippet(comment) +
     '<div class="body"><strong>' + comment.title.replace(/</g,"&lt;") + '</strong>' +
     renderMarkdown(comment.body) + '</div>';
 

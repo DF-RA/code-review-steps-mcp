@@ -1,8 +1,10 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 
-import { DRAFT_STATUSES, type DraftStatus } from "./draft.js";
+import { DRAFT_STATUSES, type DraftComment, type DraftStatus } from "./draft.js";
 import { renderPage } from "./page.js";
+import { snippetFor, type Snippet } from "./snippet.js";
+import { rawFileDiff } from "../file-diff.js";
 import { saveDraftComment, saveDraftConfirmed, saveFix } from "../review/db.js";
 import { requireSession, type ReviewSession } from "../review/session.js";
 
@@ -45,6 +47,52 @@ function send(response: ServerResponse, status: number, type: string, body: stri
   response.end(body);
 }
 
+/**
+ * The diff of one file, asked of git once.
+ *
+ * The page reloads itself after every click, and the range of a review never
+ * moves, so the text can only be the same one: keying by range and path means
+ * one call per file for the whole session instead of one per click.
+ */
+const diffs = new Map<string, Promise<string | undefined>>();
+
+function diffOf(session: ReviewSession, path: string): Promise<string | undefined> {
+  const key = `${session.range}:${path}`;
+  let pending = diffs.get(key);
+
+  if (!pending) {
+    // A file the range does not touch has no diff, and that is an answer and
+    // not a failure: the comment is shown without its piece of code.
+    pending = rawFileDiff(session.repoPath, session.range, path).catch(() => undefined);
+    diffs.set(key, pending);
+  }
+
+  return pending;
+}
+
+type CommentWithSnippet = DraftComment & { snippet?: Snippet };
+
+/** Each line comment with the piece of code it points at. */
+async function withSnippets(
+  session: ReviewSession,
+  comments: DraftComment[],
+): Promise<CommentWithSnippet[]> {
+  return Promise.all(
+    comments.map(async (comment) => {
+      if (comment.scope !== "line" || !comment.path || comment.line === undefined) {
+        return comment;
+      }
+
+      const diff = await diffOf(session, comment.path);
+      const snippet = diff
+        ? snippetFor(diff, comment.path, comment.line, comment.endLine)
+        : undefined;
+
+      return snippet ? { ...comment, snippet } : comment;
+    }),
+  );
+}
+
 function sessionOf(reviewId: string): ReviewSession | undefined {
   try {
     return requireSession(reviewId);
@@ -81,7 +129,11 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       response,
       200,
       "application/json; charset=utf-8",
-      JSON.stringify({ ...draft, fixes: session.fixes ?? null }),
+      JSON.stringify({
+        ...draft,
+        comments: await withSnippets(session, draft.comments),
+        fixes: session.fixes ?? null,
+      }),
     );
     return;
   }

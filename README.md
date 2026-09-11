@@ -554,6 +554,25 @@ Sobre el servidor:
 - Cada comentario lleva el **color de su severidad** en el borde y en la etiqueta,
   con la misma correspondencia que los alerts de GitHub, para distinguirlos de un
   vistazo sin leer.
+- Cada comentario de línea enseña **el código al que apunta**, igual que GitHub
+  pone el hunk encima de un comentario de review: el trozo del diff con su
+  contexto, numerado por el lado nuevo, y la línea comentada resaltada. El bloque
+  va en **paleta Dracula**, la misma con tema claro y con tema oscuro: es un
+  trozo de editor, y un editor no se vuelve blanco porque la página que lo rodea
+  lo sea. El diff de cada archivo se le pide a git una sola vez, no en cada clic.
+- El código va **resaltado por sintaxis**, al estilo de `delta`: la banda de color
+  dice qué hizo el diff con la línea, y los colores de los tokens por encima son
+  lo que la mantiene leyéndose como código. La banda además **solo se pinta
+  cuando distingue algo**: en un archivo que el PR añade entero cae en todas las
+  líneas, no separa nada y convierte el fragmento en un rectángulo verde, así que
+  ahí lo dice solo el `+` del margen. El resaltador es propio y vale para todos los
+  lenguajes a la vez — cadenas, comentarios, números, palabras clave y llamadas,
+  que es de donde sale casi todo el color — porque la página no carga nada de
+  internet y una gramática por lenguaje sería una dependencia.
+- Si la línea **no es una que el PR cambie**, la página lo dice ahí mismo: GitHub
+  no admite un comentario inline sobre ella, así que al publicar irá como
+  comentario del archivo. Si además cae fuera del diff no hay código que enseñar,
+  y entonces solo queda el aviso.
 
 Volver a llamarla después de rehacer comentarios **conserva las decisiones que ya
 tomaste** sobre los demás: solo se rehace lo que pediste rehacer.

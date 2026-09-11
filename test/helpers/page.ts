@@ -49,9 +49,13 @@ export interface PageHarness {
  * Not a mock of the server: the page talks to the HTTP handler that ships, so
  * what a click leaves stored is the real thing and not a fake of it.
  */
-export async function openPage(draft: Draft): Promise<PageHarness> {
+export async function openPage(
+  draft: Draft,
+  /** What the review says about the clone, for a page that shows code from it. */
+  overrides?: Partial<Omit<ReviewSession, "id" | "createdAt">>,
+): Promise<PageHarness> {
   const base = await ensureServer();
-  const session = createSession(sessionData());
+  const session = createSession(sessionData(overrides));
 
   session.draft = draft;
 
