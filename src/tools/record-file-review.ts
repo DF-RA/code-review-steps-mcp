@@ -8,6 +8,7 @@ import {
   renderComment,
   type ReviewComment,
 } from "../review/comments.js";
+import { saveFileReview } from "../review/db.js";
 import { requireFiles, requireSession } from "../review/session.js";
 
 const commentSchema = z.object({
@@ -33,7 +34,9 @@ const commentSchema = z.object({
 
 const inputSchema = {
   reviewId: z.string().describe("El reviewId que devolvió start_review."),
-  path: z.string().describe("Archivo revisado, de los que devolvió get_pr_files."),
+  pathId: z
+    .string()
+    .describe("Identificador del archivo revisado (pathId), de los que devolvió get_pr_files."),
   comments: z
     .array(commentSchema)
     .describe(
@@ -44,6 +47,7 @@ const inputSchema = {
 const outputSchema = {
   reviewId: z.string(),
   path: z.string(),
+  pathId: z.string(),
   recorded: z.number(),
   reviewedFiles: z.number(),
   totalFiles: z.number(),
@@ -55,23 +59,31 @@ export function registerRecordFileReview(server: McpServer): void {
   server.registerTool(
     "record_file_review",
     {
-      title: "Registrar la revisión de un archivo",
+      title: "[Step 6.2] Registrar la revisión de un archivo",
       description:
-        "Guarda en la revisión los comentarios que el agente concluyó sobre un archivo, ya con el formato con el que se publicarían. Llámala siempre después de revisar un archivo con el prompt review_file, incluso si no hay nada que señalar: así queda constancia de qué se revisó y qué falta. No publica nada en GitHub.",
+        "Guarda en la revisión los comentarios que el agente concluyó sobre un archivo, ya con el formato con el que se publicarían. El archivo se indica con su pathId, el mismo que devolvió get_pr_files. Llámala siempre después de revisar un archivo con el prompt review_file, incluso si no hay nada que señalar: así queda constancia de qué se revisó y qué falta. No publica nada en GitHub.",
       inputSchema,
       outputSchema,
     },
-    async ({ reviewId, path, comments }) => {
+    async ({ reviewId, pathId, comments }) => {
       try {
         const session = requireSession(reviewId);
         const files = requireFiles(session);
-        const cleanPath = path.trim();
+        const wanted = pathId.trim();
+        const file = files.find((candidate) => candidate.pathId === wanted);
 
-        if (!files.some((file) => file.path === cleanPath)) {
+        if (!file) {
+          // Passing the path is the easy slip, so answer with the id it wanted.
+          const byPath = files.find((candidate) => candidate.path === wanted);
+
           throw new UserFacingError(
-            `"${cleanPath}" no está entre los archivos del PR. Usa una ruta de las que devolvió get_pr_files.`,
+            byPath
+              ? `"${wanted}" es la ruta, no el pathId. El de ese archivo es ${byPath.pathId}.`
+              : `No hay ningún archivo con pathId "${wanted}" entre los ${files.length} del PR. Usa uno de los que devolvió get_pr_files.`,
           );
         }
+
+        const cleanPath = file.path;
 
         const stored: ReviewComment[] = comments.map((comment) => ({
           ...comment,
@@ -89,6 +101,7 @@ export function registerRecordFileReview(server: McpServer): void {
 
         session.reviews ??= new Map();
         session.reviews.set(cleanPath, stored);
+        saveFileReview(session.id, file.pathId, stored);
 
         const pending = files
           .map((file) => file.path)
@@ -120,6 +133,7 @@ export function registerRecordFileReview(server: McpServer): void {
           structuredContent: {
             reviewId: session.id,
             path: cleanPath,
+            pathId: file.pathId,
             recorded: stored.length,
             reviewedFiles: session.reviews.size,
             totalFiles: files.length,

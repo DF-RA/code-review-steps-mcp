@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { runGit } from "./git/git.js";
 
 export const CHANGE_STATUSES = [
@@ -14,6 +16,12 @@ export type ChangeStatus = (typeof CHANGE_STATUSES)[number];
 
 /* Type aliases, not interfaces: they travel in structuredContent. */
 export type ChangedFile = {
+  /**
+   * Identifier of the file inside its review, derived from the path.
+   * Gives the later steps something short and safe to name a file with, instead
+   * of a path that carries spaces, accents and slashes.
+   */
+  pathId: string;
   path: string;
   status: ChangeStatus;
   /** Only on renames and copies. */
@@ -22,6 +30,11 @@ export type ChangedFile = {
   additions?: number;
   deletions?: number;
 };
+
+/** Same path, same id: it is the path that identifies a file within a review. */
+export function pathId(path: string): string {
+  return createHash("md5").update(path, "utf8").digest("hex");
+}
 
 /** git diff --name-status letters. */
 const GIT_STATUS_BY_LETTER: Record<string, ChangeStatus> = {
@@ -60,7 +73,7 @@ function parseNameStatus(stdout: string): ChangedFile[] {
       index += 3;
 
       if (path) {
-        files.push({ path, status, previousPath });
+        files.push({ pathId: pathId(path), path, status, previousPath });
       }
       continue;
     }
@@ -69,7 +82,7 @@ function parseNameStatus(stdout: string): ChangedFile[] {
     index += 2;
 
     if (path) {
-      files.push({ path, status });
+      files.push({ pathId: pathId(path), path, status });
     }
   }
 

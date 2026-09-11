@@ -14,14 +14,20 @@
     "rulesets"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=24"
   },
+  "packageManager": "pnpm@10.33.3",
   "scripts": {
     "build": "tsc && chmod +x dist/index.js",
     "dev": "tsc --watch",
     "start": "node dist/index.js",
     "clean": "rm -rf dist",
-    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test $(find test -name \"*.test.ts\" | sort)",
+    "test:watch": "node --import tsx --test --watch $(find test -name \"*.test.ts\" | sort)",
+    "test:coverage": "node --import tsx --test --experimental-test-coverage --test-coverage-lines=90 --test-coverage-branches=85 --test-coverage-functions=90 $(find test -name \"*.test.ts\" | sort)",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json",
+    "verify": "pnpm typecheck && pnpm lint && pnpm test",
     "inspect": "pnpm build && mcp-inspector node dist/index.js",
     "inspect:cli": "pnpm build && mcp-inspector --cli node dist/index.js"
   },
@@ -38,7 +44,13 @@
     "@modelcontextprotocol/inspector": "^2.5.0",
     "@types/node": "^26.4.1",
     "eslint": "^10.10.0",
+    "tsx": "^4.23.13",
     "typescript": "^6.0.3",
     "typescript-eslint": "^8.69.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
   }
 }

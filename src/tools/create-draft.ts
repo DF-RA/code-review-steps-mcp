@@ -6,6 +6,7 @@ import { z } from "zod";
 import { countByStatus, toDraftComment, type DraftComment } from "../draft/draft.js";
 import { draftUrl, ensureServer } from "../draft/server.js";
 import { UserFacingError } from "../errors.js";
+import { saveDraft } from "../review/db.js";
 import { requireFiles, requireSession } from "../review/session.js";
 
 const inputSchema = {
@@ -25,7 +26,7 @@ export function registerCreateDraft(server: McpServer): void {
   server.registerTool(
     "create_draft",
     {
-      title: "Crear el borrador de la revisión",
+      title: "[Step 7] Crear el borrador de la revisión",
       description:
         "Séptimo paso. Junta los comentarios registrados en un borrador y lo publica en una página local para que la persona lo revise en su navegador: puede editar cada comentario, marcarlo como válido, descartarlo o pedir otra vuelta. Devuelve el enlace. Después de llamarla, DETENTE y pide a la persona que abra el enlace y confirme; consulta get_draft_status cuando te avise.",
       inputSchema,
@@ -60,7 +61,7 @@ export function registerCreateDraft(server: McpServer): void {
 
             comments.push(
               existing && existing.title === fresh.title
-                ? { ...fresh, status: existing.status, note: existing.note, body: existing.body, edited: existing.edited }
+                ? { ...fresh, status: existing.status, body: existing.body, edited: existing.edited }
                 : fresh,
             );
           });
@@ -71,6 +72,8 @@ export function registerCreateDraft(server: McpServer): void {
           confirmed: false,
           createdAt: Date.now(),
         };
+
+        saveDraft(session.id, session.draft);
 
         const url = draftUrl(await ensureServer(), session.id);
         const counts = countByStatus(session.draft);

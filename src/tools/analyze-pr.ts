@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { SEVERITIES } from "../analysis/types.js";
 import { UserFacingError } from "../errors.js";
+import { saveAnalysis } from "../review/db.js";
 import { requireFiles, requireSession } from "../review/session.js";
 import { analyzePullRequest } from "../static-analysis.js";
 
@@ -34,7 +35,7 @@ export function registerAnalyzePr(server: McpServer): void {
   server.registerTool(
     "analyze_pr",
     {
-      title: "Analizar el PR con herramientas",
+      title: "[Step 4] Analizar el PR con herramientas",
       description:
         "Cuarto paso. Pasa los analizadores estáticos (PMD, detekt, golangci-lint, ESLint, Ruff y Semgrep) sobre los archivos del pull request y guarda en la revisión los problemas que el PR introdujo, comparando cada archivo contra su versión anterior. Se ejecuta una sola vez para todo el PR porque estas herramientas necesitan leer archivos completos: no saben interpretar un diff. get_file_diff entrega después, archivo por archivo, el diff junto con los problemas que aquí se detectaron. Requiere el reviewId de start_review y haber llamado a get_pr_files.",
       inputSchema,
@@ -45,14 +46,22 @@ export function registerAnalyzePr(server: McpServer): void {
         const session = requireSession(reviewId);
         const files = requireFiles(session);
 
-        const analysis = await analyzePullRequest(
-          session.repoPath,
-          session.baseSha,
-          session.range,
-          files.filter((file) => file.status !== "deleted").map((file) => file.path),
-        );
+        // Running the analyzers again over frozen commits could only reproduce
+        // what is stored, at the cost of every external process a second time.
+        const reused = session.analysis !== undefined;
+        const analysis =
+          session.analysis ??
+          (await analyzePullRequest(
+            session.repoPath,
+            session.baseSha,
+            session.range,
+            files.filter((file) => file.status !== "deleted").map((file) => file.path),
+          ));
 
-        session.analysis = analysis;
+        if (!reused) {
+          session.analysis = analysis;
+          saveAnalysis(session.id, analysis);
+        }
 
         const findings = [...analysis.findingsByFile.values()].flat();
         const lines = [
@@ -90,7 +99,9 @@ export function registerAnalyzePr(server: McpServer): void {
 
         lines.push(
           "",
-          "Siguiente: get_file_diff por cada archivo, que trae el diff con estos problemas ya asociados.",
+          reused
+            ? "Análisis ya guardado de esta revisión: no se ha vuelto a ejecutar ninguna herramienta. Para rehacerlo, start_review con restart: true."
+            : "Siguiente: get_file_diff por cada archivo, que trae el diff con estos problemas ya asociados.",
         );
 
         const nothingRan = analysis.tools.length === 0 && analysis.unanalyzed.length === 0;

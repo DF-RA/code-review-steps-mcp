@@ -57,6 +57,12 @@ make            # equivale a make help
 | `make deps` | Instala las dependencias de Node |
 | `make build` | Compila `src/` en `dist/` |
 | `make dev` | Compila en modo watch |
+| `make test` | Pasa los tests |
+| `make test-watch` | Pasa los tests en modo watch |
+| `make coverage` | Tests con cobertura y sus umbrales (Node >= 22) |
+| `make lint` | ESLint sobre `src/` y `test/` |
+| `make typecheck` | Tipos de `src/` y `test/` |
+| `make verify` | Lo mismo que la CI: tipos, lint y tests |
 | `make inspect` | Compila y abre el MCP Inspector |
 | `make clean` | Borra `dist/` |
 
@@ -271,8 +277,8 @@ consume lo que produjo el anterior.
 2. task_context(reviewId)          → qué pedía la tarea (prompt + record_task_context)
 3. get_pr_files(reviewId)          → archivos del PR
 4. analyze_pr(reviewId)            → problemas detectados por las herramientas
-5. get_file_diff(reviewId, path)   → diff + los problemas de ese archivo
-6. review_file(reviewId, path)     → el agente analiza y registra sus comentarios
+5. get_file_diff(reviewId, pathId) → diff + los problemas de ese archivo
+6. review_file(reviewId, pathId)   → el agente analiza y registra sus comentarios
    (5 y 6, uno por archivo)
 7. create_draft(reviewId)          → borrador en una página local, para revisarlo
 8. get_draft_status(reviewId)      → qué decidió la persona sobre cada comentario
@@ -295,9 +301,10 @@ Por qué encadenado y no cuatro tools sueltas:
 El `reviewId` viaja por referencia: el diff y los hallazgos se quedan en el
 servidor, no se arrastran por el contexto del agente de un paso a otro.
 
-Las revisiones viven en memoria del proceso y caducan a las 4 horas. Para no
-perder el trabajo hecho, se exportan a un archivo y se retoman cuando quieras
-(ver **Interrumpir y retomar** más abajo).
+Las revisiones viven en SQLite, en `~/.code-review-steps/reviews.db`. Cada paso
+guarda lo que produce según lo produce, así que nada se pierde al cerrar el
+proceso y ningún paso se repite si ya se hizo (ver **Interrumpir y retomar** más
+abajo).
 
 ## Los pasos
 
@@ -411,12 +418,16 @@ ser contexto del resto del flujo.
   regla. Con el ajuste quedan 4, todos accionables. Para usar el ruleset de tu
   proyecto, apunta `CODE_REVIEW_MCP_PMD_RULESET` a su ruta.
 
-### 5. `get_file_diff(reviewId, path)`
+### 5. `get_file_diff(reviewId, pathId)`
 
 El diff de un archivo **junto con los problemas que el paso 3 detectó en él**.
 Es lo que necesitas para revisar ese archivo, en una sola respuesta.
 
+- El archivo se indica con su `pathId`, no con su ruta: `get_pr_files` devuelve
+  uno por archivo. Si le pasas la ruta, el error te dice cuál es su `pathId`.
 - Los problemas no se recalculan: vienen del análisis de la revisión.
+- El diff completo se guarda la primera vez, así que pedir otra parte del mismo
+  archivo no vuelve a llamar a git.
 - Los diffs largos llegan **por partes**, cortadas entre bloques de cambio
   (`@@`), nunca a mitad de uno; cada parte repite la cabecera del archivo. La
   respuesta trae `totalHunks`, `hunksIncluded`, `hasMore` y `nextOffset`: se pide
@@ -426,7 +437,7 @@ Es lo que necesitas para revisar ese archivo, en una sola respuesta.
 - Lo que las herramientas no cubren —diseño, lógica de negocio, si los tests
   prueban lo que dicen— es lo que valora el agente a partir del diff.
 
-### 6. `review_file(reviewId, path)` — prompt
+### 6. `review_file(reviewId, pathId)` — prompt
 
 Aquí entra el juicio, que es lo que ninguna herramienta cubre. Es un **prompt**,
 no una tool: construye la revisión de un archivo con todo el contexto dentro.
@@ -521,7 +532,13 @@ comentario se puede:
 - **editar** — el texto que quede es el que se publicaría;
 - marcar **válido**;
 - marcar **descartado**;
-- marcar **otra vuelta**, con una nota de qué falta, para que el agente lo rehaga.
+- marcar **otra vuelta**, para que el agente lo rehaga.
+
+La página **no tiene ningún campo de texto libre** más allá del editor del propio
+comentario, y es deliberado: cada acción reconstruye la lista entera desde el
+servidor, así que un campo a medio escribir sería algo que hay que salvar de cada
+clic. Marcar es todo el mensaje; qué cambiar te lo pregunta el agente en la
+conversación, donde la respuesta puede ser tan larga como haga falta.
 
 Y un botón para **confirmar** el borrador cuando termines.
 
@@ -537,6 +554,25 @@ Sobre el servidor:
 - Cada comentario lleva el **color de su severidad** en el borde y en la etiqueta,
   con la misma correspondencia que los alerts de GitHub, para distinguirlos de un
   vistazo sin leer.
+- Cada comentario de línea enseña **el código al que apunta**, igual que GitHub
+  pone el hunk encima de un comentario de review: el trozo del diff con su
+  contexto, numerado por el lado nuevo, y la línea comentada resaltada. El bloque
+  va en **paleta Dracula**, la misma con tema claro y con tema oscuro: es un
+  trozo de editor, y un editor no se vuelve blanco porque la página que lo rodea
+  lo sea. El diff de cada archivo se le pide a git una sola vez, no en cada clic.
+- El código va **resaltado por sintaxis**, al estilo de `delta`: la banda de color
+  dice qué hizo el diff con la línea, y los colores de los tokens por encima son
+  lo que la mantiene leyéndose como código. La banda además **solo se pinta
+  cuando distingue algo**: en un archivo que el PR añade entero cae en todas las
+  líneas, no separa nada y convierte el fragmento en un rectángulo verde, así que
+  ahí lo dice solo el `+` del margen. El resaltador es propio y vale para todos los
+  lenguajes a la vez — cadenas, comentarios, números, palabras clave y llamadas,
+  que es de donde sale casi todo el color — porque la página no carga nada de
+  internet y una gramática por lenguaje sería una dependencia.
+- Si la línea **no es una que el PR cambie**, la página lo dice ahí mismo: GitHub
+  no admite un comentario inline sobre ella, así que al publicar irá como
+  comentario del archivo. Si además cae fuera del diff no hay código que enseñar,
+  y entonces solo queda el aviso.
 
 Volver a llamarla después de rehacer comentarios **conserva las decisiones que ya
 tomaste** sobre los demás: solo se rehace lo que pediste rehacer.
@@ -547,8 +583,9 @@ Qué decidiste sobre cada comentario. El agente la consulta cuando le avisas de 
 ya revisaste la página.
 
 - Si el borrador no está confirmado, lo dice y espera.
-- Si hay comentarios marcados **otra vuelta**, los devuelve con tu nota para que el
-  agente los rehaga, los registre de nuevo y vuelva a crear el borrador.
+- Si hay comentarios marcados **otra vuelta**, los devuelve y le dice al agente que
+  te pregunte qué cambiar de cada uno antes de rehacerlos, registrarlos de nuevo y
+  volver a crear el borrador.
 - Cuando está confirmado y sin pendientes, devuelve en `approved` los comentarios
   aprobados ya renderizados, listos para publicar.
 
@@ -576,15 +613,22 @@ pasa el tipo:
 Es la **única tool del flujo que escribe fuera de tu máquina**, y no se puede
 deshacer: los comentarios quedan en el PR y le llegan al equipo.
 
-Los tres anclajes se reparten así: los de línea van inline, los de archivo como
-comentario de archivo, y los de PR al cuerpo del review.
+Los tres anclajes se reparten así: los de línea van inline dentro del review, los
+de PR al cuerpo del review, y los de archivo **salen aparte**, como comentario
+propio sobre el archivo. No es un capricho: el endpoint que crea un review solo
+acepta comentarios anclados a una línea del diff, así que uno de archivo metido
+ahí hace que GitHub rechace el review entero. Se publican después de que el
+review esté puesto, uno a uno, para que un comentario que GitHub no acepte no se
+lleve por delante a los demás; si alguno falla, la tool te dice cuál.
 
 **Un comentario sobre una línea que el PR no toca no lo acepta la API de GitHub**,
 y eso pasa más de lo que parece: si el cambio deja huérfano un import que ya
 estaba, el problema lo introduce el PR pero la línea culpable no está en el diff.
 En vez de fallar la publicación entera, esos comentarios se degradan a comentario
 de archivo con una nota de a qué línea se referían, y la llamada en seco te dice
-cuáles antes de publicar.
+cuáles antes de publicar. Con un rango pasa algo parecido: GitHub solo acepta
+comentarios multilínea dentro de un mismo hunk, así que si el diff no toca todo
+el rango el comentario se ancla a su primera línea en vez de perderse.
 
 #### `create_fix_list(reviewId)` + `next_fix` + `complete_fix`
 
@@ -602,41 +646,30 @@ esto sale de tu máquina.
 
 ## Interrumpir y retomar
 
-Una revisión de 48 archivos es trabajo de un rato, y vive en memoria del proceso:
-reiniciar Claude Code la borra. Estas dos tools la hacen persistente.
+Una revisión de 48 archivos es trabajo de un rato, y no se pierde: cada paso
+escribe lo suyo en SQLite en cuanto lo produce.
 
-### `export_review(reviewId, file?)`
-
-Guarda la revisión entera en un JSON: el pull request, los commits congelados, la
-tarea, los archivos, el análisis de las herramientas, los comentarios y **las
-decisiones que tomaste sobre cada uno**.
-
-Por defecto va a `~/.code-review-steps/<repo>-pr<número>.json`, uno por pull
-request. Con `file` se puede elegir otra ruta.
-
-Devuelve un resumen de por dónde iba, que es lo que verás al retomarla:
+Para continuarla, vuelve a llamar a `start_review` con el mismo pull request. Si
+el head no ha cambiado, devuelve **la misma revisión con su `reviewId`** y avisa
+de que la retoma:
 
 ```
-PR #123 — feat: [PROJ-1234] añadir el campo de cancelación al evento
-Rama: feature/campo-cancelacion → develop
-Tarea: PROJ-1234
-Archivos: 48
-Análisis: PMD, Ruff, Semgrep
-Revisados: 1 de 48
-Borrador: 2 comentario(s) · 1 válidos, 0 descartados, 1 para otra vuelta, 0 sin revisar
+Head en GitHub: ab01bc07
+Ya había una revisión de este mismo head: se retoma, no se abre otra.
 ```
 
-### `import_review(file)`
+A partir de ahí, los pasos ya hechos se reutilizan en lugar de repetirse: el
+contexto de la tarea no se vuelve a buscar, la lista de archivos no se vuelve a
+calcular y **los analizadores no se vuelven a ejecutar**, que es lo que de verdad
+cuesta tiempo.
 
-Devuelve la revisión al servidor **con el mismo `reviewId`**, así que los pasos
-siguientes y el enlace del borrador funcionan igual que antes.
+Si el pull request recibió commits nuevos, el head es otro: se abre una revisión
+nueva y se avisa de que la anterior quedó atrás.
 
-Comprueba que el clon siga ahí y que el commit revisado siga en él. Si la rama se
-borró o el clon cambió, avisa: lo revisado corresponde a unos commits concretos y
-seguir a ciegas sobre otros sería peor que empezar de nuevo.
-
-El formato lleva un número de versión: un archivo guardado con otra versión del
-servidor falla diciéndolo, en vez de cargarse a medias.
+Para rehacerla desde cero, `start_review` con `restart: true`. Borra el contexto,
+los archivos, el análisis, los comentarios y el borrador, y conserva el mismo
+`reviewId`. Lo único que no borra es el registro de lo que ya se publicó en
+GitHub: eso ocurrió fuera de tu máquina y reiniciar aquí no lo deshace.
 
 ## Extensiones
 
@@ -723,10 +756,84 @@ pero para instalar es más cómodo `make`.
 | --- | --- |
 | `pnpm build` | Compila `src/` en `dist/` y deja el entrypoint ejecutable. |
 | `pnpm dev` | `tsc --watch`. |
-| `pnpm typecheck` | Chequeo de tipos sin generar salida. |
+| `pnpm typecheck` | Chequeo de tipos de `src/` y `test/`, sin generar salida. |
+| `pnpm lint` | ESLint sobre `src/` y `test/`. |
+| `pnpm test` | Pasa los tests. |
+| `pnpm test:watch` | Los mismos tests, en modo watch. |
+| `pnpm test:coverage` | Tests con cobertura y umbrales. Necesita Node >= 22. |
+| `pnpm verify` | `typecheck` + `lint` + `test`, que es lo que corre la CI. |
 | `pnpm start` | Ejecuta el servidor compilado sobre stdio. |
 | `pnpm inspect` | Compila y abre la UI del MCP Inspector contra el servidor. |
 | `pnpm inspect:cli` | Igual, pero en modo CLI: sin navegador, imprime y termina. |
+
+## Tests
+
+```bash
+make test        # o pnpm test
+make test-watch  # se vuelven a pasar al guardar
+make coverage    # con umbrales de cobertura, necesita Node >= 22
+make verify      # tipos + lint + tests, lo mismo que la CI
+```
+
+Se ejecutan con el runner de Node (`node:test`) y **tsx**, que quita los tipos al
+vuelo. No hay paso de compilación previo: los tests importan de `src/` y ven el
+mismo código que se publica.
+
+### Qué se prueba
+
+`test/` espeja `src/`: `test/analysis/sarif.test.ts` prueba `src/analysis/sarif.ts`.
+Lo cubierto es la lógica que decide qué acaba en la revisión —parseo de diffs e
+informes, aislamiento de lo que el PR introdujo, formato de los comentarios,
+sesión y export/import—, no las tools ni los prompts, que son adaptadores del
+SDK sobre esa lógica.
+
+Lo que lee un clon (`git.ts`, `changed-files.ts`, `file-diff.ts`, `baseline.ts`)
+se prueba contra un **repositorio git temporal de verdad**, que crea
+`test/helpers/repo.ts`. Un diff escrito a mano demostraría que el parser sabe
+leer el fixture, no que sabe leer a git; y varios de los casos que importan
+—rutas con espacios o acentos, renombrados, la línea de contexto en blanco que
+es un espacio y no una cadena vacía— solo aparecen si git es quien genera la
+salida.
+
+La página del borrador va como una cadena de JavaScript de navegador dentro de
+`renderPage`, así que la única forma de probar qué pasa al pulsar algo es
+**ejecutarla**: `test/helpers/dom.ts` es el DOM mínimo que ese script toca y
+`test/helpers/page.ts` lo corre contra el **servidor de borrador real**, no
+contra un mock. Un clic en el test hace el mismo POST que haría en el navegador.
+
+Los helpers de `test/helpers/` son cinco:
+
+| Helper | Para qué |
+| --- | --- |
+| `repo.ts` | Un clon git desechable, con identidad fija y sin leer la configuración global |
+| `env.ts` | Cambia variables de entorno para un solo test y las restaura al salir |
+| `session.ts` | Una `ReviewSession` de ejemplo, con y sin los pasos opcionales |
+| `dom.ts` | El DOM mínimo que necesita el script de la página del borrador |
+| `page.ts` | Ejecuta ese script contra el servidor de borrador de verdad |
+
+### Cobertura
+
+`make coverage` falla si baja del 90 % de líneas, el 85 % de ramas o el 90 % de
+funciones. Solo mide los archivos que los tests importan, así que es un trinquete
+sobre lo que ya está cubierto, no una medida del proyecto entero. Y no mide el
+script de la página: para Node es una cadena, no código, aunque los tests sí lo
+ejecuten.
+
+### Escribir un test nuevo
+
+- Un archivo `*.test.ts` dentro de `test/`, en la carpeta que corresponda a la de
+  `src/`. El runner los encuentra solo.
+- Los imports relativos llevan extensión `.js`, igual que en `src/`.
+- El nombre del test dice qué comportamiento se espera, no qué función se llama:
+  lo que se lee cuando falla es esa frase.
+- Nada de tocar `~/.code-review-steps` ni el repositorio: directorios temporales
+  con `mkdtemp` y limpieza en `t.after`.
+
+## Integración continua
+
+`.github/workflows/ci.yml` pasa tipos, lint y tests en **Node 20, 22 y 24**, y
+compila. La cobertura va en un trabajo aparte porque los umbrales
+(`--test-coverage-lines` y compañía) no existen antes de Node 22.
 
 ## MCP Inspector
 
@@ -768,8 +875,8 @@ pnpm inspect:cli --method tools/call --tool-name get_pr_files \
 
 # Diff de uno de esos archivos
 pnpm inspect:cli --method tools/call --tool-name get_file_diff \
-  --tool-arg pr=200 --tool-arg repo=/Users/tu/github/tu-repo \
-  --tool-arg path=src/main/java/com/ejemplo/Servicio.java
+  --tool-arg reviewId=<el que devolvió start_review> \
+  --tool-arg pathId=<el pathId que devolvió get_pr_files>
 
 # Leer el resource
 pnpm inspect:cli --method resources/read --uri review://checklist
@@ -799,6 +906,8 @@ printf '%s\n' \
 
 ```
 Makefile           # instalación y mantenimiento
+.github/workflows/
+└── ci.yml         # tipos, lint y tests en Node 20, 22 y 24
 commands/
 └── revisar-pr.md  # el slash command, se copia a ~/.claude/commands/
 rulesets/
@@ -849,6 +958,13 @@ src/
 ├── tools/            # un archivo por tool + un index que las registra
 ├── resources/        # un archivo por resource + un index que los registra
 └── prompts/          # un archivo por prompt + un index que los registra
+test/                 # espeja src/: test/analysis/sarif.test.ts prueba src/analysis/sarif.ts
+└── helpers/
+    ├── repo.ts       # repositorio git temporal, para lo que lee un clon de verdad
+    ├── env.ts        # variables de entorno de un solo test, restauradas al salir
+    ├── session.ts    # una ReviewSession de ejemplo
+    ├── dom.ts        # el DOM mínimo que toca el script de la página
+    └── page.ts       # ejecuta ese script contra el servidor de borrador real
 ```
 
 ## Añadir un primitivo nuevo
@@ -876,7 +992,18 @@ src/
   llevan extensión `.js` aunque los archivos sean `.ts`.
 - `registerTool` recibe un *shape* de Zod (un objeto plano de validadores), no un
   `z.object(...)`. El SDK deriva el JSON Schema a partir de él.
-- El código y sus comentarios van en inglés; la documentación, en español.
+- El código y sus comentarios van en inglés; la documentación, en español. Los
+  tests son código: van en inglés, nombres de test incluidos.
+- **Un cambio de comportamiento llega con su test.** Ninguno de los fallos que
+  han aparecido hasta ahora se veía leyendo el código: un cuerpo de varios
+  párrafos que se salía del blockquote de la alerta, o `git ls-tree` citando las
+  rutas con acentos y devolviéndole a git una forma que no casa con nada. Los dos
+  necesitaban que algo los ejecutara.
+- **La página del borrador no guarda estado que no esté en el servidor.** Cada
+  acción reconstruye la lista entera, así que cualquier cosa a medio escribir es
+  algo que hay que salvar de cada clic. Por eso el único campo que queda es el
+  editor del comentario, que tiene su botón de guardar; lo que hace falta contar
+  se cuenta en la conversación, no en la página.
 
 ## Licencia
 

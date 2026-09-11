@@ -3,8 +3,9 @@ import { z } from "zod";
 
 import type { Finding } from "../analysis/types.js";
 import { reviewGuidance } from "../extensions/extension.js";
-import { fileDiff } from "../file-diff.js";
+import { partOf, rawFileDiff, type FileDiff } from "../file-diff.js";
 import type { ChangedFile } from "../changed-files.js";
+import { findFileDiff } from "../review/db.js";
 import {
   requireAnalysis,
   requireFiles,
@@ -38,6 +39,20 @@ function formatTask(task: TaskContext): string {
   // Who the task is assigned to is deliberately left out: it is internal
   // information about people, and these comments end up published in the PR.
   return lines.filter(Boolean).join("\n");
+}
+
+/** Says which part of the diff this is, when it is not the whole of it. */
+function describePart(part: FileDiff): string {
+  const last = part.offset + part.hunksIncluded;
+  const where = `Bloques ${part.offset + 1}-${last} de ${part.totalHunks}.`;
+
+  return part.hasMore
+    ? [
+        `${where} FALTAN ${part.totalHunks - last} POR VER.`,
+        `No registres todavía la revisión de este archivo: vuelve a pedir este prompt con offset: "${part.nextOffset}" hasta llegar al último bloque, y decide con el archivo entero delante.`,
+        "",
+      ].join("\n")
+    : `${where} Es el último: ya has visto el archivo entero.`;
 }
 
 function formatFindings(findings: Finding[], analyzed: boolean, tools: string[]): string {
@@ -114,37 +129,71 @@ export function registerReviewFilePrompt(server: McpServer): void {
   server.registerPrompt(
     "review_file",
     {
-      title: "Revisar un archivo del PR",
+      title: "[Step 6.1] Revisar un archivo del PR",
       description:
-        "Quinto paso. Construye la revisión de un archivo con todo el contexto: su estado en el PR, los problemas que detectaron las herramientas, el diff y la descripción de la tarea. El agente analiza desde cinco roles y registra el resultado con record_file_review.",
+        "Quinto paso. Construye la revisión de un archivo con todo el contexto: su estado en el PR, los problemas que detectaron las herramientas, el diff y la descripción de la tarea. El archivo se indica con su pathId, el mismo que devolvió get_pr_files. El agente analiza desde cinco roles y registra el resultado con record_file_review.",
       argsSchema: {
         reviewId: z.string().describe("El reviewId que devolvió start_review."),
-        path: z.string().describe("Ruta del archivo, de las que devolvió get_pr_files."),
+        pathId: z
+          .string()
+          .describe("Identificador del archivo (pathId), de los que devolvió get_pr_files."),
+        offset: z
+          .string()
+          .optional()
+          .describe(
+            "Bloque por el que empezar, si el diff no cabe entero. Usa el que la parte anterior indicó como siguiente.",
+          ),
       },
     },
-    async ({ reviewId, path }) => {
+    async ({ reviewId, pathId, offset }) => {
       const session = requireSession(reviewId);
       const files = requireFiles(session);
       const analysis = requireAnalysis(session);
       const task = requireTaskContext(session);
       const guidance = await reviewGuidance();
 
-      const cleanPath = path.trim();
-      const file = files.find((candidate) => candidate.path === cleanPath);
+      const wanted = pathId.trim();
+      const file = files.find((candidate) => candidate.pathId === wanted);
 
       if (!file) {
+        // Passing the path is the easy slip right after the change, so answer
+        // with the id that was wanted instead of just denying the one given.
+        const byPath = files.find((candidate) => candidate.path === wanted);
+
         throw new Error(
-          `"${cleanPath}" no está entre los archivos del PR. Usa una ruta de get_pr_files.`,
+          byPath
+            ? `"${wanted}" es la ruta, no el pathId. El de ese archivo es ${byPath.pathId}.`
+            : `No hay ningún archivo con pathId "${wanted}" entre los ${files.length} del PR. Usa uno de los que devolvió get_pr_files.`,
         );
       }
+
+      const cleanPath = file.path;
 
       const findings = analysis.findingsByFile.get(cleanPath) ?? [];
       const analyzed = !analysis.unanalyzed.includes(cleanPath) && analysis.tools.length > 0;
 
-      const diff =
-        file.status === "deleted"
-          ? "El archivo fue eliminado por este PR."
-          : (await fileDiff(session.repoPath, session.range, cleanPath)).diff;
+      // Step 5 stored the whole diff of this file; reading it back beats asking
+      // git to reprint the same text over commits that cannot move.
+      let part: FileDiff | undefined;
+
+      if (file.status !== "deleted") {
+        // Prompt arguments arrive as strings: an unparseable one would silently
+        // select no hunk at all and hand the agent an empty diff.
+        const from = Number(offset ?? 0);
+
+        if (!Number.isInteger(from) || from < 0) {
+          throw new Error(
+            `offset tiene que ser un entero de 0 en adelante, y llegó "${offset}".`,
+          );
+        }
+
+        const stored = findFileDiff(session.id, file.pathId);
+        const whole = stored?.diff ?? (await rawFileDiff(session.repoPath, session.range, cleanPath));
+
+        part = partOf(whole, cleanPath, from);
+      }
+
+      const diff = part ? part.diff : "El archivo fue eliminado por este PR.";
 
       const sections = [
         `Estás revisando un archivo del PR #${session.prNumber} de ${session.repoPath}.`,
@@ -168,6 +217,10 @@ export function registerReviewFilePrompt(server: McpServer): void {
         formatFindings(findings, analyzed, analysis.tools),
         "",
         "## El cambio",
+        // A diff that does not fit comes in parts, and the agent has to know it
+        // is looking at one: concluding on a third of a file, believing it saw
+        // all of it, is the failure this line exists to prevent.
+        ...(part && (part.hasMore || part.offset > 0) ? [describePart(part)] : []),
         "```diff",
         diff,
         "```",

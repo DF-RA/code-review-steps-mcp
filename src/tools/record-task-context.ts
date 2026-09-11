@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { UserFacingError } from "../errors.js";
+import { findTaskContext, saveTaskContext } from "../review/db.js";
 import { requireSession } from "../review/session.js";
 
 const inputSchema = {
@@ -24,35 +25,53 @@ const inputSchema = {
       "Qué pide la tarea, en dos o tres frases tuyas. Es lo que leerán los pasos siguientes, así que tiene que entenderse sin abrir la tarea.",
     ),
   url: z.string().optional().describe("Enlace a la tarea."),
-  assignee: z.string().optional().describe("A quién está asignada."),
-  assignedToAuthor: z
-    .boolean()
-    .optional()
-    .describe(
-      "Si la tarea está asignada al autor del PR. Déjalo sin indicar si no puedes afirmarlo con seguridad. Es información interna: no aparece en los comentarios que se publican.",
-    ),
 };
 
 const outputSchema = {
   reviewId: z.string(),
   found: z.boolean(),
   code: z.string().optional(),
-  assignedToAuthor: z.boolean().optional(),
 };
 
 export function registerRecordTaskContext(server: McpServer): void {
   server.registerTool(
     "record_task_context",
     {
-      title: "Registrar el contexto de la tarea",
+      title: "[Step 2.2] Registrar el contexto de la tarea",
       description:
         "Guarda en la revisión lo que se encontró sobre la tarea del pull request. Llámala siempre después del prompt task_context, también cuando no haya tarea o el gestor no esté disponible: registrando found: false el flujo continúa sin ese contexto. Los pasos siguientes leen esto en vez de volver a consultarlo.",
       inputSchema,
       outputSchema,
     },
-    async ({ reviewId, found, reason, code, title, summary, url, assignee, assignedToAuthor }) => {
+    async ({ reviewId, found, reason, code, title, summary, url }) => {
       try {
         const session = requireSession(reviewId);
+        const already = findTaskContext(session.id);
+
+        // Recording it twice is not correcting it: the review already answered
+        // this question, and the answer belongs to the code that was frozen.
+        if (already) {
+          return {
+            content: [
+              {
+                type: "text",
+                text: [
+                  already.found
+                    ? `El contexto de la tarea ya estaba registrado: ${already.code ?? "sin código"}${already.title ? ` — ${already.title}` : ""}.`
+                    : `El contexto de la tarea ya estaba registrado: sin tarea (${already.reason}).`,
+                  "No se ha cambiado nada. Para rehacer la revisión desde cero, start_review con restart: true.",
+                  "",
+                  "Siguiente: get_pr_files con este reviewId.",
+                ].join("\n"),
+              },
+            ],
+            structuredContent: {
+              reviewId: session.id,
+              found: already.found,
+              code: already.code,
+            },
+          };
+        }
 
         if (!found && !reason?.trim()) {
           throw new UserFacingError(
@@ -67,17 +86,12 @@ export function registerRecordTaskContext(server: McpServer): void {
           title: title?.trim() || undefined,
           summary: summary?.trim() || undefined,
           url: url?.trim() || undefined,
-          assignee: assignee?.trim() || undefined,
-          assignedToAuthor,
         };
 
+        saveTaskContext(session.id, session.taskContext);
+
         const lines = found
-          ? [
-              `Contexto de la tarea registrado: ${code ?? "sin código"}${title ? ` — ${title}` : ""}.`,
-              assignedToAuthor === false
-                ? `Aviso interno: la tarea está asignada a ${assignee ?? "otra persona"}, no al autor del PR (${session.author}). Queda aquí para que lo sepas; no se incluye en los comentarios que se publican.`
-                : "",
-            ]
+          ? [`Contexto de la tarea registrado: ${code ?? "sin código"}${title ? ` — ${title}` : ""}.`]
           : [`Sin contexto de tarea: ${reason}.`, "La revisión sigue sin él."];
 
         lines.push("", "Siguiente: get_pr_files con este reviewId.");
@@ -88,7 +102,6 @@ export function registerRecordTaskContext(server: McpServer): void {
             reviewId: session.id,
             found,
             code: session.taskContext.code,
-            assignedToAuthor,
           },
         };
       } catch (error) {

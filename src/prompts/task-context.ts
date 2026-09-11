@@ -2,6 +2,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
 import { taskTracker, type TaskTracker } from "../extensions/extension.js";
+import { findTaskContext } from "../review/db.js";
 import { requireSession } from "../review/session.js";
 
 /**
@@ -9,7 +10,7 @@ import { requireSession } from "../review/session.js";
  * tools. That lives in an extension, so nothing about a particular company ends
  * up in this server. Without one, the prompt stays generic and still works.
  */
-function steps(tracker: TaskTracker | undefined, author: string): string {
+function steps(tracker: TaskTracker | undefined): string {
   const trackerName = tracker?.name ?? "el gestor de tareas";
   const pattern = tracker?.codePattern
     ? `con la forma \`${tracker.codePattern}\``
@@ -30,13 +31,7 @@ function steps(tracker: TaskTracker | undefined, author: string): string {
     `3. Si hay código: ${lookup}`,
     "   Quédate con qué pide la tarea, su título y su URL.",
     "",
-    `4. Comprueba a quién está asignada. El autor del PR es ${author}; ten en cuenta que`,
-    "   su usuario puede escribirse distinto en cada sistema, así que compara con",
-    "   criterio y, si no puedes afirmarlo, deja assignedToAuthor sin indicar en vez de",
-    "   adivinar. Esto es información interna del proceso: sirve para avisar a quien",
-    "   revisa, nunca para comentarla en el pull request.",
-    "",
-    "5. Si el gestor de tareas no está disponible, no responde o no encuentra el código,",
+    "4. Si el gestor de tareas no está disponible, no responde o no encuentra el código,",
     "   registra found: false explicando cuál de las tres cosas pasó. La revisión sigue",
     "   sin ese contexto: es información extra, no un requisito.",
   ].join("\n");
@@ -46,7 +41,7 @@ export function registerTaskContextPrompt(server: McpServer): void {
   server.registerPrompt(
     "task_context",
     {
-      title: "Buscar el contexto de la tarea",
+      title: "[Step 2.1] Buscar el contexto de la tarea",
       description:
         "Segundo paso. Busca en el gestor de tareas qué se pidió en este pull request, para poder revisarlo contra lo que debía hacer y no solo contra sí mismo. Se resuelve una vez por revisión. Registra el resultado con record_task_context.",
       argsSchema: {
@@ -55,6 +50,39 @@ export function registerTaskContextPrompt(server: McpServer): void {
     },
     async ({ reviewId }) => {
       const session = requireSession(reviewId);
+      const already = findTaskContext(session.id);
+
+      // Sending the agent to the tracker for an answer the review already has
+      // spends calls to get back what is sitting in the database.
+      if (already) {
+        return {
+          messages: [
+            {
+              role: "user",
+              content: {
+                type: "text",
+                text: [
+                  `El contexto de la tarea del PR #${session.prNumber} ya está registrado en esta revisión:`,
+                  "",
+                  already.found
+                    ? [
+                        `Tarea: ${already.code ?? "sin código"}${already.title ? ` — ${already.title}` : ""}`,
+                        already.summary ? `Qué pide: ${already.summary}` : "",
+                        already.url ? `Enlace: ${already.url}` : "",
+                      ]
+                        .filter(Boolean)
+                        .join("\n")
+                    : `Sin tarea: ${already.reason}`,
+                  "",
+                  "No hay nada que buscar. Pasa directamente a get_pr_files con este reviewId.",
+                  "Si quieres rehacer la revisión entera, start_review con restart: true.",
+                ].join("\n"),
+              },
+            },
+          ],
+        };
+      }
+
       const tracker = await taskTracker();
 
       const text = [
@@ -69,7 +97,7 @@ export function registerTaskContextPrompt(server: McpServer): void {
           : "Descripción: (el autor no escribió ninguna)",
         "",
         "## Qué hacer",
-        steps(tracker, session.author),
+        steps(tracker),
         "",
         "## Cómo registrarlo",
         `Llama a record_task_context con el reviewId ${session.id}. En summary escribe

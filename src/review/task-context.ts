@@ -15,11 +15,4 @@ export type TaskContext = {
   /** What the task asks for, in the agent's own words. */
   summary?: string;
   url?: string;
-  assignee?: string;
-  /**
-   * Whether the task is assigned to the author of the pull request. False is
-   * worth mentioning in the review: it can mean the PR was opened by the wrong
-   * person, or that the task was never reassigned.
-   */
-  assignedToAuthor?: boolean;
 };

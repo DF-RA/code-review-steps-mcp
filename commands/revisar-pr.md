@@ -39,9 +39,10 @@ herramientas ausentes no significa que el código esté limpio.
 
 Para **cada** archivo de la lista, en orden:
 
-1. `get_file_diff` con el `reviewId` y la ruta. Si el diff llega por partes,
-   pide las siguientes con `nextOffset` hasta terminar el archivo.
-2. Usa el prompt `review_file` con ese archivo y sigue lo que te pide: analizar
+1. `get_file_diff` con el `reviewId` y el `pathId` del archivo, que viene en la
+   lista de `get_pr_files`. Si el diff llega por partes, pide las siguientes con
+   `nextOffset` hasta terminar el archivo.
+2. Usa el prompt `review_file` con ese mismo `pathId` y sigue lo que te pide: analizar
    desde los cinco roles y quedarte con la conclusión del líder de proyecto.
 3. Registra el resultado con `record_file_review`, incluso si no hay nada que
    señalar, para que quede constancia de que ese archivo se revisó.
@@ -60,9 +61,11 @@ No sigas hasta que yo te avise de que ya lo revisé.
 
 Cuando te avise, llama a `get_draft_status`:
 
-- Si hay comentarios marcados para **otra vuelta**, rehazlos según mi nota,
-  regístralos con `record_file_review` y vuelve a `create_draft`. Se conservan
-  las decisiones que ya tomé sobre los demás.
+- Si hay comentarios marcados para **otra vuelta**, en la página solo los marqué:
+  **pregúntame qué cambiar de cada uno**, de uno en uno y citándome el comentario,
+  antes de tocar nada. Con lo que te diga, rehazlos, regístralos con
+  `record_file_review` y vuelve a `create_draft`. Se conservan las decisiones que
+  ya tomé sobre los demás.
 - Si está confirmado y sin pendientes, dime cuántos comentarios quedaron
   aprobados y **pregúntame qué hago con ellos**, con estas dos opciones:
 
@@ -101,12 +104,14 @@ Repite hasta que no quede nada pendiente. Ve informando en corto del avance.
 
 ## Interrumpir y retomar
 
-Si en cualquier punto te digo que lo dejamos, llama a `export_review` y dame la
-ruta del archivo. La revisión vive en memoria y caduca a las 4 horas: sin exportar
-se pierde todo el trabajo hecho.
+Si en cualquier punto lo dejamos, no hay que hacer nada: cada paso guarda lo
+suyo según lo produce, así que la revisión sigue ahí aunque cierre Claude Code.
 
-Cuando te pida continuar una revisión, llama a `import_review` con esa ruta y
-sigue desde el paso donde se quedó, que la propia tool te dice.
+Para continuarla, vuelve a llamar a `start_review` con el mismo PR. Si el head no
+ha cambiado, te devuelve la misma revisión con su `reviewId`, y los pasos ya
+hechos se reutilizan en vez de repetirse. Si el PR se movió, te lo dice.
+
+Para rehacerla desde cero, `start_review` con `restart: true`.
 
 ## Reglas
 

@@ -110,13 +110,13 @@ function takePart(diff: string, offset: number, path: string): Part {
   };
 }
 
-/** Full diff of one file, in parts cut at hunk boundaries. */
-export async function fileDiff(
-  cwd: string,
-  range: string,
-  path: string,
-  offset = 0,
-): Promise<FileDiff> {
+/**
+ * The whole diff of one file, as git prints it.
+ *
+ * Split out from the slicing so a caller that already has the text — because it
+ * was stored the first time — can cut a part from it without asking git again.
+ */
+export async function rawFileDiff(cwd: string, range: string, path: string): Promise<string> {
   // The -- separator keeps git from reading the path as a ref.
   const stdout = await runGit(["diff", range, "--", path], cwd);
 
@@ -124,5 +124,25 @@ export async function fileDiff(
     throw new UserFacingError(`El rango ${range} no muestra cambios en "${path}".`);
   }
 
-  return { path, ...takePart(stdout, offset, path) };
+  return stdout;
+}
+
+/** One part of a whole diff, cut at hunk boundaries. */
+export function partOf(diff: string, path: string, offset = 0): FileDiff {
+  return { path, ...takePart(diff, offset, path) };
+}
+
+/** How many hunks the whole diff has, without cutting a part out of it. */
+export function countHunks(diff: string): number {
+  return splitHunks(diff).hunks.length;
+}
+
+/** Full diff of one file, in parts cut at hunk boundaries. */
+export async function fileDiff(
+  cwd: string,
+  range: string,
+  path: string,
+  offset = 0,
+): Promise<FileDiff> {
+  return partOf(await rawFileDiff(cwd, range, path), path, offset);
 }

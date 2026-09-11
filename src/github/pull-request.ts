@@ -14,6 +14,7 @@ const PR_FIELDS = [
   "isDraft",
   "author",
   "headRefName",
+  "headRefOid",
   "baseRefName",
   "statusCheckRollup",
 ] as const;
@@ -48,6 +49,12 @@ export type PullRequestInfo = {
   author: string;
   sourceBranch: string;
   targetBranch: string;
+  /**
+   * Head commit as GitHub sees it right now. Compared against the sha frozen in
+   * a review, it is what tells apart "the clone is behind" from "the pull
+   * request moved since we reviewed it".
+   */
+  headRefOid: string;
   pipeline: PipelineSummary;
 };
 
@@ -75,6 +82,7 @@ interface RawPullRequest {
   isDraft?: boolean;
   author?: { login?: string } | null;
   headRefName?: string;
+  headRefOid?: string;
   baseRefName?: string;
   statusCheckRollup?: RawCheck[] | null;
 }
@@ -148,6 +156,7 @@ function toPullRequestInfo(raw: RawPullRequest): PullRequestInfo {
     author: raw.author?.login ?? "desconocido",
     sourceBranch: raw.headRefName ?? "",
     targetBranch: raw.baseRefName ?? "",
+    headRefOid: raw.headRefOid ?? "",
     pipeline: summarizePipeline(raw.statusCheckRollup ?? []),
   };
 }

@@ -7,6 +7,18 @@ import type { Draft } from "../draft/draft.js";
 import type { FixItem } from "./fixes.js";
 import type { TaskContext } from "./task-context.js";
 import { UserFacingError } from "../errors.js";
+import {
+  findAnalysis,
+  findDraft,
+  findFileReviews,
+  findFixes,
+  findReviewById,
+  findReviewFiles,
+  findTaskContext,
+  hasTaskContext,
+  resetReviewSteps,
+  saveReview,
+} from "./db.js";
 
 /**
  * State of one review, shared by every step.
@@ -34,6 +46,11 @@ export interface ReviewSession {
    */
   baseSha: string;
   headSha: string;
+  /**
+   * Head commit as GitHub reported it when the review opened. Frozen next to
+   * headSha so a later look at the same pull request can tell whether it moved.
+   */
+  headRefOid: string;
   range: string;
   createdAt: number;
 
@@ -57,58 +74,57 @@ export interface ReviewSession {
   };
 }
 
-const TTL_MS = 4 * 60 * 60 * 1000;
-const MAX_SESSIONS = 20;
-
-const sessions = new Map<string, ReviewSession>();
-
-function prune(): void {
-  const now = Date.now();
-
-  for (const [id, session] of sessions) {
-    if (now - session.createdAt > TTL_MS) {
-      sessions.delete(id);
-    }
-  }
-
-  while (sessions.size >= MAX_SESSIONS) {
-    const oldest = sessions.keys().next();
-
-    if (oldest.done) {
-      break;
-    }
-    sessions.delete(oldest.value);
-  }
-}
-
+/**
+ * Every step reads the review back from SQLite.
+ *
+ * There is no cache: the rows are the review, and a session object is a view of
+ * them built for one call. Two callers therefore cannot disagree about what a
+ * review holds, and nothing is lost when this process ends — which is what the
+ * page of the draft depends on, since it is written by a browser and read by a
+ * tool that may run much later.
+ */
 export function createSession(data: Omit<ReviewSession, "id" | "createdAt">): ReviewSession {
-  prune();
-
   const session: ReviewSession = { ...data, id: randomUUID(), createdAt: Date.now() };
-  sessions.set(session.id, session);
+
+  // Only step 1 has run, so the row is the whole of it; every later step writes
+  // its own table as it goes.
+  saveReview(session);
 
   return session;
 }
 
-/** Puts a session restored from a file back into play, under its own id. */
-export function adoptSession(session: ReviewSession): ReviewSession {
-  prune();
-  sessions.set(session.id, session);
+/** Puts a review back to just after step 1. */
+export function restartSteps(session: ReviewSession): void {
+  resetReviewSteps(session.id);
 
-  return session;
+  session.taskContext = undefined;
+  session.files = undefined;
+  session.analysis = undefined;
+  session.reviews = undefined;
+  session.draft = undefined;
+  session.fixes = undefined;
 }
 
-/** Every step starts here, so a missing or expired session says what to do. */
+/** Every step starts here, so a missing review says what to do. */
 export function requireSession(reviewId: string): ReviewSession {
-  const session = sessions.get(reviewId.trim());
+  const id = reviewId.trim();
+  const stored = findReviewById(id);
 
-  if (!session) {
+  if (!stored) {
     throw new UserFacingError(
-      `No hay ninguna revisión con id "${reviewId}". Empieza por start_review; las revisiones caducan a las 4 horas.`,
+      `No hay ninguna revisión con id "${reviewId}". Empieza por start_review.`,
     );
   }
 
-  return session;
+  return {
+    ...stored,
+    taskContext: findTaskContext(id),
+    files: findReviewFiles(id),
+    analysis: findAnalysis(id),
+    reviews: findFileReviews(id),
+    draft: findDraft(id),
+    fixes: findFixes(id),
+  };
 }
 
 export function requireTaskContext(session: ReviewSession): TaskContext {
@@ -119,6 +135,19 @@ export function requireTaskContext(session: ReviewSession): TaskContext {
   }
 
   return session.taskContext;
+}
+
+/**
+ * Step 2 is a prerequisite of step 3 by order, not by data: nothing there reads
+ * what the task said. So the guard asks the database whether it was recorded
+ * and stops at that, instead of loading a context it will not look at.
+ */
+export function requireRecordedTaskContext(reviewId: string): void {
+  if (!hasTaskContext(reviewId)) {
+    throw new UserFacingError(
+      "Todavía no se ha buscado el contexto de la tarea. Usa el prompt task_context con este reviewId y registra el resultado con record_task_context; si no hay tarea o el gestor no está disponible, regístralo igual con found: false.",
+    );
+  }
 }
 
 export function requireFiles(session: ReviewSession): ChangedFile[] {

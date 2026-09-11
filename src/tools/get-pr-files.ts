@@ -3,7 +3,12 @@ import { z } from "zod";
 
 import { CHANGE_STATUSES, listChangedFiles, type ChangedFile } from "../changed-files.js";
 import { UserFacingError } from "../errors.js";
-import { requireSession, requireTaskContext, type ReviewSession } from "../review/session.js";
+import { saveReviewFiles } from "../review/db.js";
+import {
+  requireRecordedTaskContext,
+  requireSession,
+  type ReviewSession,
+} from "../review/session.js";
 
 const inputSchema = {
   reviewId: z.string().describe("El reviewId que devolvió start_review."),
@@ -15,6 +20,7 @@ const outputSchema = {
   range: z.string(),
   files: z.array(
     z.object({
+      pathId: z.string(),
       path: z.string(),
       status: z.enum(CHANGE_STATUSES),
       previousPath: z.string().optional(),
@@ -32,8 +38,13 @@ const GROUPS: { status: ChangedFile["status"]; label: string; mark: string }[] =
   { status: "unknown", label: "Sin clasificar", mark: "?" },
 ];
 
-function format(session: ReviewSession, files: ChangedFile[]): string {
-  const lines = [`PR #${session.prNumber} — ${files.length} archivo(s) · rango ${session.range}`];
+function format(session: ReviewSession, files: ChangedFile[], reused: boolean): string {
+  // The range is shas now, so the branches carry the readable half and the
+  // short shas say which commits, without pretending a name is the code.
+  const lines = [
+    `PR #${session.prNumber} — ${files.length} archivo(s)`,
+    `${session.targetBranch}...${session.sourceBranch} (${session.baseSha.slice(0, 8)}...${session.headSha.slice(0, 8)})`,
+  ];
 
   for (const group of GROUPS) {
     const inGroup = files.filter((file) => file.status === group.status);
@@ -50,7 +61,12 @@ function format(session: ReviewSession, files: ChangedFile[]): string {
     }
   }
 
-  lines.push("", "Siguiente: analyze_pr con este reviewId.");
+  lines.push(
+    "",
+    reused
+      ? "Lista ya guardada de esta revisión: no se ha vuelto a mirar el repositorio. Para rehacerla, start_review con restart: true."
+      : "Siguiente: analyze_pr con este reviewId.",
+  );
 
   return lines.join("\n");
 }
@@ -59,7 +75,7 @@ export function registerGetPrFiles(server: McpServer): void {
   server.registerTool(
     "get_pr_files",
     {
-      title: "Listar los archivos del PR",
+      title: "[Step 3] Listar los archivos del PR",
       description:
         "Tercer paso. Lista los archivos que el pull request añade, modifica o elimina, agrupados por tipo de cambio, y los deja guardados en la revisión. Los pasos siguientes solo aceptan rutas de esta lista. Requiere el reviewId de start_review.",
       inputSchema,
@@ -68,16 +84,22 @@ export function registerGetPrFiles(server: McpServer): void {
     async ({ reviewId }) => {
       try {
         const session = requireSession(reviewId);
-        requireTaskContext(session);
+        requireRecordedTaskContext(session.id);
 
-        const files = await listChangedFiles(session.repoPath, session.range);
+        // The range is frozen on commits, so listing again could only ever give
+        // the same answer. What is already stored is the answer.
+        const reused = session.files !== undefined;
+        const files = session.files ?? (await listChangedFiles(session.repoPath, session.range));
 
-        // Stored on the session: the next steps read from here, they do not
-        // recompute it.
-        session.files = files;
+        if (!reused) {
+          // Stored on the review: the next steps read from here, they do not
+          // recompute it, and they find it after a restart too.
+          session.files = files;
+          saveReviewFiles(session.id, files);
+        }
 
         return {
-          content: [{ type: "text", text: format(session, files) }],
+          content: [{ type: "text", text: format(session, files, reused) }],
           structuredContent: {
             reviewId: session.id,
             prNumber: session.prNumber,

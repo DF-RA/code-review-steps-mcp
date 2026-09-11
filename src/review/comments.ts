@@ -92,7 +92,16 @@ export function renderComment(comment: ReviewComment): string {
   // The label stays inside the alert even though the alert has its own icon:
   // it keeps the severity readable where the alert is not rendered, such as a
   // terminal or a diff of the raw text.
-  const inside = [`**${heading}**`, ...(where ? [where] : []), "", comment.body.trim()];
+  //
+  // The body is split: quote() prefixes each element, so a body with more than
+  // one line would leave every line after the first outside the blockquote, and
+  // an alert cannot be reopened.
+  const inside = [
+    `**${heading}**`,
+    ...(where ? [where] : []),
+    "",
+    ...comment.body.trim().split("\n"),
+  ];
 
   return [`> [!${ALERT[comment.severity]}]`, quote(inside), "", `_${signature()}_`].join("\n");
 }
